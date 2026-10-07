@@ -1,6 +1,6 @@
 import Database from "better-sqlite3"
 
-const db = new Database("montadoria.db")
+const db = new Database("/data/montadoria.db")
 
 db.pragma("journal_mode = WAL")
 
