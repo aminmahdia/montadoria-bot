@@ -1,5 +1,7 @@
 import db from "./database.js"
 
+const OWNER_ID = Number(process.env.OWNER_ID)
+
 const ROLES = {
   user: "کاربر عادی",
   moderator: "مدیر / ناظر",
