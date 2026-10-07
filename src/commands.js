@@ -43,6 +43,17 @@ export function registerCommands(bot) {
       .prepare("SELECT id FROM users WHERE telegram_id = ?")
       .get(telegramId)
 
+    if (telegramId === OWNER_ID) {
+  db.prepare(`
+    UPDATE users
+    SET role = 'owner', updated_at = ?
+    WHERE telegram_id = ?
+  `).run(
+    now,
+    telegramId
+  )
+    }
+    
     if (!existingUser) {
       db.prepare(`
         INSERT INTO users (
