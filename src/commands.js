@@ -1,6 +1,32 @@
 import db from "./database.js"
 
+const ROLES = {
+  user: "کاربر عادی",
+  moderator: "مدیر / ناظر",
+  owner: "مالک",
+}
+
+function getUser(telegramId) {
+  return db
+    .prepare(`
+      SELECT telegram_id, username, display_name,
+             money, bank, xp, level, role, job
+      FROM users
+      WHERE telegram_id = ?
+    `)
+    .get(telegramId)
+}
+
+function isModeratorOrOwner(user) {
+  return user && (user.role === "moderator" || user.role === "owner")
+}
+
+function isOwner(user) {
+  return user && user.role === "owner"
+}
+
 export function registerCommands(bot) {
+  // START
   bot.command("start", async (ctx) => {
     const telegramId = ctx.from.id
     const username = ctx.from.username ?? null
@@ -55,15 +81,9 @@ export function registerCommands(bot) {
     }
   })
 
+  // PROFILE
   bot.command("profile", async (ctx) => {
-    const user = db
-      .prepare(`
-        SELECT telegram_id, username, display_name,
-               money, bank, xp, level, role, job
-        FROM users
-        WHERE telegram_id = ?
-      `)
-      .get(ctx.from.id)
+    const user = getUser(ctx.from.id)
 
     if (!user) {
       await ctx.reply("ابتدا /start را بزنید.")
@@ -83,11 +103,12 @@ export function registerCommands(bot) {
         `⭐ Level: ${user.level}`,
         `✨ XP: ${user.xp}`,
         `💼 Job: ${user.job ?? "Unemployed"}`,
-        `🎭 Role: ${user.role}`,
+        `🎭 Role: ${ROLES[user.role] ?? user.role}`,
       ].join("\n")
     )
   })
 
+  // HELP
   bot.command("help", async (ctx) => {
     await ctx.reply(
       [
@@ -103,13 +124,43 @@ export function registerCommands(bot) {
     )
   })
 
+  // PING
   bot.command("ping", async (ctx) => {
     await ctx.reply("🏓 pong")
   })
 
+  // ID
   bot.command("id", async (ctx) => {
     await ctx.reply(
       `Chat ID: ${ctx.chat.id}\nUser ID: ${ctx.from?.id ?? "unknown"}`
     )
   })
-          }
+
+  // ADMIN TEST
+  bot.command("admin", async (ctx) => {
+    const user = getUser(ctx.from.id)
+
+    if (!isModeratorOrOwner(user)) {
+      await ctx.reply("⛔ دسترسی ندارید.")
+      return
+    }
+
+    await ctx.reply(
+      `🛡️ دسترسی مدیریتی فعال است.\n\nRole: ${
+        ROLES[user.role] ?? user.role
+      }`
+    )
+  })
+
+  // OWNER TEST
+  bot.command("owner", async (ctx) => {
+    const user = getUser(ctx.from.id)
+
+    if (!isOwner(user)) {
+      await ctx.reply("⛔ این دستور فقط برای مالک است.")
+      return
+    }
+
+    await ctx.reply("👑 دسترسی مالک فعال است.")
+  })
+              }
