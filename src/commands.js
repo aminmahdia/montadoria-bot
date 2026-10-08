@@ -342,10 +342,6 @@ async function showOwnerPanel(ctx) {
 
 export function registerCommands(bot) {
 
-  // =========================
-  // START
-  // =========================
-
   bot.command("start", async (ctx) => {
     const telegramId = ctx.from.id
     const username = ctx.from.username ?? null
@@ -425,10 +421,6 @@ export function registerCommands(bot) {
     )
   })
 
-  // =========================
-  // PROFILE
-  // =========================
-
   bot.command("profile", async (ctx) => {
     syncOwner(ctx.from.id)
 
@@ -457,10 +449,6 @@ export function registerCommands(bot) {
     )
   })
 
-  // =========================
-  // HELP
-  // =========================
-
   bot.command("help", async (ctx) => {
     await ctx.reply(
       [
@@ -480,27 +468,15 @@ export function registerCommands(bot) {
     )
   })
 
-  // =========================
-  // PING
-  // =========================
-
   bot.command("ping", async (ctx) => {
     await ctx.reply("🏓 pong")
   })
-
-  // =========================
-  // ID
-  // =========================
 
   bot.command("id", async (ctx) => {
     await ctx.reply(
       `Chat ID: ${ctx.chat.id}\nUser ID: ${ctx.from?.id ?? "unknown"}`
     )
   })
-
-  // =========================
-  // ADMIN
-  // =========================
 
   bot.command("admin", async (ctx) => {
     syncOwner(ctx.from.id)
@@ -522,10 +498,6 @@ export function registerCommands(bot) {
       ].join("\n")
     )
   })
-
-  // =========================
-  // OWNER PANEL
-  // =========================
 
   bot.command("owner", async (ctx) => {
     syncOwner(ctx.from.id)
@@ -580,10 +552,6 @@ export function registerCommands(bot) {
     )
   })
 
-  // =========================
-  // USER VIEW
-  // =========================
-
   bot.command("user", async (ctx) => {
     syncOwner(ctx.from.id)
 
@@ -633,10 +601,6 @@ export function registerCommands(bot) {
       ].join("\n")
     )
   })
-
-  // =========================
-  // SET ROLE
-  // =========================
 
   bot.command("setrole", async (ctx) => {
     syncOwner(ctx.from.id)
@@ -711,10 +675,6 @@ export function registerCommands(bot) {
     )
   })
 
-  // =========================
-  // SET JOB
-  // =========================
-
   bot.command("setjob", async (ctx) => {
     syncOwner(ctx.from.id)
 
@@ -760,10 +720,6 @@ export function registerCommands(bot) {
 
     await ctx.reply("✅ شغل کاربر تغییر کرد.")
   })
-
-  // =========================
-  // SET MONEY
-  // =========================
 
   bot.command("setmoney", async (ctx) => {
     syncOwner(ctx.from.id)
@@ -814,8 +770,7 @@ export function registerCommands(bot) {
     )
 
     await ctx.reply(`✅ Money = $${amount}`)
-  })
-    // =========================
+  })  // =========================
   // SET INFINITE MONEY
   // =========================
 
@@ -1748,8 +1703,7 @@ export function registerCommands(bot) {
       )
     }
   )
-
-  // =========================
+    // =========================
   // CALLBACK: ENABLE INFINITE MONEY
   // =========================
 
