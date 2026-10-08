@@ -66,6 +66,7 @@ export function registerCommands(bot) {
         telegramId,
         username,
         displayName,
+        telegramId === OWNER_ID ? "owner" : "user",
         now,
         now
       )
