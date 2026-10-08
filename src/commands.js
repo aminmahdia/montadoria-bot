@@ -452,7 +452,7 @@ export function registerCommands(bot) {
         `Username: ${user.username ? "@" + user.username : "ندارد"}`,
         `🆔 ID: ${user.telegram_id}`,
         "",
-        `💰 Money: $${user.money}`,
+        `💰 Money: ${user.infinite_money ? "♾️" : "$" + user.money}`,
         `🏦 Bank: $${user.bank}`,
         `⭐ Level: ${user.level}`,
         `✨ XP: ${user.xp}`,
