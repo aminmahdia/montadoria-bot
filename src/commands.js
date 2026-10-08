@@ -85,6 +85,80 @@ function safeNumber(value) {
 
   return number
 }
+// =========================
+// XP / LEVEL SYSTEM
+// =========================
+
+function xpRequiredForLevel(level) {
+  if (level <= 1) {
+    return 0
+  }
+
+  return Math.floor(
+    100 * Math.pow(level - 1, 1.5)
+  )
+}
+
+function calculateLevelFromXP(xp) {
+  let level = 1
+
+  while (
+    xp >= xpRequiredForLevel(level + 1)
+  ) {
+    level++
+
+    if (level > 1000) {
+      break
+    }
+  }
+
+  return level
+}
+
+function addXP(telegramId, amount) {
+  const user = getUser(telegramId)
+
+  if (!user) {
+    return null
+  }
+
+  const xpAmount = Number(amount)
+
+  if (
+    !Number.isFinite(xpAmount) ||
+    xpAmount <= 0
+  ) {
+    return null
+  }
+
+  const newXP =
+    Math.floor(user.xp + xpAmount)
+
+  const newLevel =
+    calculateLevelFromXP(newXP)
+
+  db.prepare(`
+    UPDATE users
+    SET xp = ?,
+        level = ?,
+        updated_at = ?
+    WHERE telegram_id = ?
+  `).run(
+    newXP,
+    newLevel,
+    new Date().toISOString(),
+    telegramId
+  )
+
+  return {
+    oldXP: user.xp,
+    newXP,
+    oldLevel: user.level,
+    newLevel,
+    levelUp:
+      newLevel > user.level,
+  }
+}
 
 function userButtonName(user) {
   const name = user.display_name || "Unknown"
@@ -916,9 +990,8 @@ export function registerCommands(bot) {
 
     await ctx.reply(`✅ Bank = $${amount}`)
   })
-
   // =========================
-  // SET XP
+  // SET XP + AUTO LEVEL
   // =========================
 
   bot.command("setxp", async (ctx) => {
@@ -941,13 +1014,13 @@ export function registerCommands(bot) {
     const targetId = Number(args[0])
     const amount = safeNumber(args[1])
 
-    if (!Number.isInteger(targetId)) {
+    if (!Number.isInteger(targetId) || targetId <= 0) {
       await ctx.reply("❌ شناسه کاربر نامعتبر است.")
       return
     }
 
-    if (amount === null || amount < 0) {
-      await ctx.reply("❌ مقدار نامعتبر است.")
+    if (amount === null || amount < 0 || !Number.isInteger(amount)) {
+      await ctx.reply("❌ مقدار XP باید عدد صحیح و غیرمنفی باشد.")
       return
     }
 
@@ -958,25 +1031,34 @@ export function registerCommands(bot) {
       return
     }
 
+    const newLevel = calculateLevelFromXP(amount)
+
     db.prepare(`
       UPDATE users
       SET xp = ?,
+          level = ?,
           updated_at = ?
       WHERE telegram_id = ?
     `).run(
       amount,
+      newLevel,
       new Date().toISOString(),
       targetId
     )
 
-    await ctx.reply(`✅ XP = ${amount}`)
+    await ctx.reply(
+      `✅ اطلاعات کاربر به‌روزرسانی شد.\n\n` +
+      `👤 کاربر: ${target.display_name}\n` +
+      `✨ XP: ${amount}\n` +
+      `⭐ Level: ${newLevel}`
+    )
   })
-
-  // =========================
+   // =========================
   // SET LEVEL
   // =========================
+  
 
-  bot.command("setlevel", async (ctx) => {
+    bot.command("setlevel", async (ctx) => {
     syncOwner(ctx.from.id)
 
     const requester = getUser(ctx.from.id)
@@ -1590,7 +1672,7 @@ export function registerCommands(bot) {
     }
   )
 
-  // =========================
+    // =========================
   // CALLBACK: JOB
   // =========================
 
@@ -1611,14 +1693,229 @@ export function registerCommands(bot) {
         return
       }
 
-      await ctx.answerCallbackQuery({
-        text:
-          "💼 مدیریت شغل را در مرحله بعد اضافه می‌کنیم.",
-        show_alert: true,
-      })
+      const targetId = Number(
+        ctx.match[1]
+      )
+
+      const page = Number(
+        ctx.match[2]
+      )
+
+      const target = getUser(targetId)
+
+      if (!target) {
+        await ctx.answerCallbackQuery({
+          text: "❌ کاربر پیدا نشد.",
+          show_alert: true,
+        })
+
+        return
+      }
+
+      const jobs = db
+        .prepare(`
+          SELECT id, name, category
+          FROM jobs
+          WHERE active = 1
+          ORDER BY category ASC, id ASC
+        `)
+        .all()
+
+      const keyboard = []
+
+      for (const job of jobs) {
+        keyboard.push([
+          {
+            text: `${job.name}`,
+            callback_data:
+              `job_set:${job.id}:${targetId}:${page}`,
+          },
+        ])
+      }
+
+      keyboard.push([
+        {
+          text: "❌ بیکار / بدون شغل",
+          callback_data:
+            `job_clear:${targetId}:${page}`,
+        },
+      ])
+
+      keyboard.push([
+        {
+          text: "↩️ بازگشت",
+          callback_data:
+            `user_view:${targetId}:${page}`,
+        },
+      ])
+
+      await ctx.answerCallbackQuery()
+
+      await ctx.editMessageText(
+        [
+          "💼 تغییر شغل",
+          "",
+          `کاربر: ${target.display_name}`,
+          `شغل فعلی: ${target.job ?? "Unemployed"}`,
+          "",
+          "شغل جدید را انتخاب کنید:",
+        ].join("\n"),
+        {
+          reply_markup: {
+            inline_keyboard: keyboard,
+          },
+        }
+      )
     }
   )
 
+  // =========================
+  // CALLBACK: SET JOB
+  // =========================
+
+  bot.callbackQuery(
+    /^job_set:(\d+):(\d+):(\d+)$/,
+    async (ctx) => {
+
+      const requester = getUser(
+        ctx.from.id
+      )
+
+      if (!isOwner(requester)) {
+        await ctx.answerCallbackQuery({
+          text: "⛔ فقط مالک.",
+          show_alert: true,
+        })
+
+        return
+      }
+
+      const jobId = Number(
+        ctx.match[1]
+      )
+
+      const targetId = Number(
+        ctx.match[2]
+      )
+
+      const page = Number(
+        ctx.match[3]
+      )
+
+      const target = getUser(targetId)
+
+      if (!target) {
+        await ctx.answerCallbackQuery({
+          text: "❌ کاربر پیدا نشد.",
+          show_alert: true,
+        })
+
+        return
+      }
+
+      const job = db
+        .prepare(`
+          SELECT id, name
+          FROM jobs
+          WHERE id = ?
+            AND active = 1
+        `)
+        .get(jobId)
+
+      if (!job) {
+        await ctx.answerCallbackQuery({
+          text: "❌ شغل پیدا نشد.",
+          show_alert: true,
+        })
+
+        return
+      }
+
+      db.prepare(`
+        UPDATE users
+        SET job = ?,
+            updated_at = ?
+        WHERE telegram_id = ?
+      `).run(
+        job.name,
+        new Date().toISOString(),
+        targetId
+      )
+
+      await ctx.answerCallbackQuery({
+        text: "✅ شغل تغییر کرد.",
+      })
+
+      await showUserDetails(
+        ctx,
+        targetId,
+        page
+      )
+    }
+  )
+
+  // =========================
+  // CALLBACK: CLEAR JOB
+  // =========================
+
+  bot.callbackQuery(
+    /^job_clear:(\d+):(\d+)$/,
+    async (ctx) => {
+
+      const requester = getUser(
+        ctx.from.id
+      )
+
+      if (!isOwner(requester)) {
+        await ctx.answerCallbackQuery({
+          text: "⛔ فقط مالک.",
+          show_alert: true,
+        })
+
+        return
+      }
+
+      const targetId = Number(
+        ctx.match[1]
+      )
+
+      const page = Number(
+        ctx.match[2]
+      )
+
+      const target = getUser(targetId)
+
+      if (!target) {
+        await ctx.answerCallbackQuery({
+          text: "❌ کاربر پیدا نشد.",
+          show_alert: true,
+        })
+
+        return
+      }
+
+      db.prepare(`
+        UPDATE users
+        SET job = NULL,
+            updated_at = ?
+        WHERE telegram_id = ?
+      `).run(
+        new Date().toISOString(),
+        targetId
+      )
+
+      await ctx.answerCallbackQuery({
+        text: "✅ شغل کاربر حذف شد.",
+      })
+
+      await showUserDetails(
+        ctx,
+        targetId,
+        page
+      )
+    }
+  )
+  
   // =========================
   // CALLBACK: MONEY
   // =========================
@@ -1848,11 +2145,54 @@ export function registerCommands(bot) {
         return
       }
 
-      await ctx.answerCallbackQuery({
-        text:
-          "⭐ مدیریت XP / Level را در مرحله بعد اضافه می‌کنیم.",
-        show_alert: true,
-      })
+      const targetId = Number(
+        ctx.match[1]
+      )
+
+      const page = Number(
+        ctx.match[2]
+      )
+
+      const target = getUser(targetId)
+
+      if (!target) {
+        await ctx.answerCallbackQuery({
+          text: "❌ کاربر پیدا نشد.",
+          show_alert: true,
+        })
+
+        return
+      }
+
+      await ctx.answerCallbackQuery()
+
+      await ctx.editMessageText(
+        [
+          "⭐ مدیریت XP / LEVEL",
+          "",
+          `کاربر: ${target.display_name}`,
+          `XP فعلی: ${target.xp}`,
+          `Level فعلی: ${target.level}`,
+          "",
+          "برای تغییر مستقیم از دستورات زیر استفاده کنید:",
+          "",
+          `/setxp ${target.telegram_id} AMOUNT`,
+          `/setlevel ${target.telegram_id} LEVEL`,
+        ].join("\n"),
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "↩️ بازگشت",
+                  callback_data:
+                    `user_view:${targetId}:${page}`,
+                },
+              ],
+            ],
+          },
+        }
+      )
     }
   )
     }
