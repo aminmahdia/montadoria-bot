@@ -14,7 +14,7 @@ function getUser(telegramId) {
   return db
     .prepare(`
       SELECT telegram_id, username, display_name,
-             money, bank, xp, level, role, job
+             money, infinite_money, bank, xp, level, role, job
       FROM users
       WHERE telegram_id = ?
     `)
@@ -25,7 +25,7 @@ function getAllUsers() {
   return db
     .prepare(`
       SELECT telegram_id, username, display_name,
-             money, bank, xp, level, role, job
+             money, infinite_money, bank, xp, level, role, job
       FROM users
       ORDER BY id ASC
     `)
@@ -54,10 +54,6 @@ function isOwner(user) {
   return user && user.role === "owner"
 }
 
-/*
-  OWNER_ID فقط برای شناسایی مالک اولیه استفاده می‌شود.
-  بعد از انتقال مالکیت، مالک فعلی دیتابیس ملاک است.
-*/
 function syncOwner(telegramId) {
   if (!OWNER_ID || telegramId !== OWNER_ID) return
 
@@ -307,6 +303,8 @@ async function showOwnerPanel(ctx) {
       "/setrole ID ROLE",
       "/setjob ID JOB",
       "/setmoney ID AMOUNT",
+      "/setinfmoney ID",
+      "/removeinfmoney ID",
       "/setbank ID AMOUNT",
       "/setxp ID AMOUNT",
       "/setlevel ID LEVEL",
@@ -364,10 +362,6 @@ export function registerCommands(bot) {
     let existingUser = getUser(telegramId)
 
     if (!existingUser) {
-      /*
-        اگر مالک فعلی در دیتابیس وجود دارد،
-        OWNER_ID قدیمی دیگر نمی‌تواند دوباره مالک شود.
-      */
       const currentOwner = getCurrentOwner()
 
       const role =
@@ -381,6 +375,7 @@ export function registerCommands(bot) {
           username,
           display_name,
           money,
+          infinite_money,
           bank,
           xp,
           level,
@@ -389,7 +384,7 @@ export function registerCommands(bot) {
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, 0, 0, 0, 1, ?, NULL, ?, ?)
+        VALUES (?, ?, ?, 0, 0, 0, 0, 1, ?, NULL, ?, ?)
       `).run(
         telegramId,
         username,
@@ -551,6 +546,8 @@ export function registerCommands(bot) {
         "/setrole ID ROLE",
         "/setjob ID JOB",
         "/setmoney ID AMOUNT",
+        "/setinfmoney ID",
+        "/removeinfmoney ID",
         "/setbank ID AMOUNT",
         "/setxp ID AMOUNT",
         "/setlevel ID LEVEL",
@@ -627,7 +624,7 @@ export function registerCommands(bot) {
         `Name: ${target.display_name}`,
         `Username: ${target.username ? "@" + target.username : "ندارد"}`,
         `ID: ${target.telegram_id}`,
-        `Money: $${target.money}`,
+        `Money: ${target.infinite_money ? "♾️" : "$" + target.money}`,
         `Bank: $${target.bank}`,
         `XP: ${target.xp}`,
         `Level: ${target.level}`,
@@ -689,10 +686,6 @@ export function registerCommands(bot) {
       return
     }
 
-    /*
-      مالک فعلی هرگز با /setrole قابل تنزل نیست.
-      تنها راه تغییر مالکیت، فرآیند انتقال مالکیت است.
-    */
     if (target.role === "owner") {
       await ctx.reply(
         "⛔ مالک فعلی قابل تغییر با /setrole نیست.\n\n" +
@@ -822,63 +815,98 @@ export function registerCommands(bot) {
 
     await ctx.reply(`✅ Money = $${amount}`)
   })
- bot.command("setinfmoney", async (ctx) => {
-  if (!isOwner(ctx.from.id)) {
-    return ctx.reply("⛔ فقط مالک می‌تواند این دستور را اجرا کند.")
-  }
+    // =========================
+  // SET INFINITE MONEY
+  // =========================
 
-  const targetId = Number(ctx.match?.trim())
+  bot.command("setinfmoney", async (ctx) => {
+    syncOwner(ctx.from.id)
 
-  if (!Number.isInteger(targetId) || targetId <= 0) {
-    return ctx.reply("❌ شناسه کاربر را درست وارد کن.\nمثال:\n/setinfmoney 123456789")
-  }
+    const requester = getUser(ctx.from.id)
 
-  const target = getUser(targetId)
+    if (!isOwner(requester)) {
+      return ctx.reply(
+        "⛔ فقط مالک می‌تواند این دستور را اجرا کند."
+      )
+    }
 
-  if (!target) {
-    return ctx.reply("❌ کاربر پیدا نشد.")
-  }
+    const targetId = Number(ctx.match?.trim())
 
-  db.prepare(`
-    UPDATE users
-    SET infinite_money = 1,
-        updated_at = ?
-    WHERE telegram_id = ?
-  `).run(new Date().toISOString(), targetId)
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      return ctx.reply(
+        "❌ شناسه کاربر را درست وارد کن.\n" +
+        "مثال:\n" +
+        "/setinfmoney 123456789"
+      )
+    }
 
-  return ctx.reply(
-    `♾️ پول بی‌نهایت برای ${target.display_name} فعال شد.`
-  )
-})
+    const target = getUser(targetId)
 
-bot.command("removeinfmoney", async (ctx) => {
-  if (!isOwner(ctx.from.id)) {
-    return ctx.reply("⛔ فقط مالک می‌تواند این دستور را اجرا کند.")
-  }
+    if (!target) {
+      return ctx.reply("❌ کاربر پیدا نشد.")
+    }
 
-  const targetId = Number(ctx.match?.trim())
+    db.prepare(`
+      UPDATE users
+      SET infinite_money = 1,
+          updated_at = ?
+      WHERE telegram_id = ?
+    `).run(
+      new Date().toISOString(),
+      targetId
+    )
 
-  if (!Number.isInteger(targetId) || targetId <= 0) {
-    return ctx.reply("❌ شناسه کاربر را درست وارد کن.\nمثال:\n/removeinfmoney 123456789")
-  }
+    return ctx.reply(
+      `♾️ پول بی‌نهایت برای ${target.display_name} فعال شد.`
+    )
+  })
 
-  const target = getUser(targetId)
+  // =========================
+  // REMOVE INFINITE MONEY
+  // =========================
 
-  if (!target) {
-    return ctx.reply("❌ کاربر پیدا نشد.")
-  }
+  bot.command("removeinfmoney", async (ctx) => {
+    syncOwner(ctx.from.id)
 
-  db.prepare(`
-    UPDATE users
-    SET infinite_money = 0,
-        updated_at = ?
-    WHERE telegram_id = ?
-  `).run(new Date().toISOString(), targetId)
+    const requester = getUser(ctx.from.id)
 
-  return ctx.reply(
-    `✅ پول بی‌نهایت ${target.display_name} غیرفعال شد.`
-  )
-})
+    if (!isOwner(requester)) {
+      return ctx.reply(
+        "⛔ فقط مالک می‌تواند این دستور را اجرا کند."
+      )
+    }
+
+    const targetId = Number(ctx.match?.trim())
+
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      return ctx.reply(
+        "❌ شناسه کاربر را درست وارد کن.\n" +
+        "مثال:\n" +
+        "/removeinfmoney 123456789"
+      )
+    }
+
+    const target = getUser(targetId)
+
+    if (!target) {
+      return ctx.reply("❌ کاربر پیدا نشد.")
+    }
+
+    db.prepare(`
+      UPDATE users
+      SET infinite_money = 0,
+          updated_at = ?
+      WHERE telegram_id = ?
+    `).run(
+      new Date().toISOString(),
+      targetId
+    )
+
+    return ctx.reply(
+      `✅ پول بی‌نهایت ${target.display_name} غیرفعال شد.`
+    )
+  })
+
   // =========================
   // SET BANK
   // =========================
@@ -933,7 +961,8 @@ bot.command("removeinfmoney", async (ctx) => {
 
     await ctx.reply(`✅ Bank = $${amount}`)
   })
-    // =========================
+
+  // =========================
   // SET XP
   // =========================
 
@@ -1267,6 +1296,7 @@ bot.command("removeinfmoney", async (ctx) => {
         username,
         display_name,
         money,
+        infinite_money,
         bank,
         xp,
         level,
@@ -1275,7 +1305,7 @@ bot.command("removeinfmoney", async (ctx) => {
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, 0, 0, 0, 1, 'owner', NULL, ?, ?)
+      VALUES (?, ?, ?, 0, 0, 0, 0, 1, 'owner', NULL, ?, ?)
     `).run(
       ctx.from.id,
       ctx.from.username ?? null,
@@ -1317,8 +1347,7 @@ bot.command("removeinfmoney", async (ctx) => {
       "👑 مالکیت تأیید شد."
     )
   })
-
-  // =========================
+    // =========================
   // CALLBACK: USER LIST
   // =========================
 
@@ -1474,10 +1503,6 @@ bot.command("removeinfmoney", async (ctx) => {
         return
       }
 
-      /*
-        مالک فعلی نباید از طریق پنل Role عوض کند.
-        انتقال مالکیت فقط از طریق فرآیند انتقال انجام می‌شود.
-      */
       if (target.role === "owner") {
         await ctx.answerCallbackQuery({
           text:
@@ -1660,11 +1685,191 @@ bot.command("removeinfmoney", async (ctx) => {
         return
       }
 
+      const targetId = Number(
+        ctx.match[1]
+      )
+
+      const page = Number(
+        ctx.match[2]
+      )
+
+      const target = getUser(targetId)
+
+      if (!target) {
+        await ctx.answerCallbackQuery({
+          text: "❌ کاربر پیدا نشد.",
+          show_alert: true,
+        })
+
+        return
+      }
+
+      await ctx.answerCallbackQuery()
+
+      await ctx.editMessageText(
+        [
+          "💰 مدیریت پول",
+          "",
+          `کاربر: ${target.display_name}`,
+          `موجودی فعلی: ${target.infinite_money ? "♾️" : "$" + target.money}`,
+          "",
+          "عملیات موردنظر را انتخاب کنید:",
+          "",
+          "برای تعیین مبلغ عادی:",
+          `/setmoney ${target.telegram_id} AMOUNT`,
+        ].join("\n"),
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "♾️ فعال‌کردن پول بی‌نهایت",
+                  callback_data:
+                    `money_inf_on:${targetId}:${page}`,
+                },
+              ],
+              [
+                {
+                  text: "💵 غیرفعال‌کردن پول بی‌نهایت",
+                  callback_data:
+                    `money_inf_off:${targetId}:${page}`,
+                },
+              ],
+              [
+                {
+                  text: "↩️ بازگشت",
+                  callback_data:
+                    `user_view:${targetId}:${page}`,
+                },
+              ],
+            ],
+          },
+        }
+      )
+    }
+  )
+
+  // =========================
+  // CALLBACK: ENABLE INFINITE MONEY
+  // =========================
+
+  bot.callbackQuery(
+    /^money_inf_on:(\d+):(\d+)$/,
+    async (ctx) => {
+
+      const requester = getUser(
+        ctx.from.id
+      )
+
+      if (!isOwner(requester)) {
+        await ctx.answerCallbackQuery({
+          text: "⛔ فقط مالک.",
+          show_alert: true,
+        })
+
+        return
+      }
+
+      const targetId = Number(
+        ctx.match[1]
+      )
+
+      const page = Number(
+        ctx.match[2]
+      )
+
+      const target = getUser(targetId)
+
+      if (!target) {
+        await ctx.answerCallbackQuery({
+          text: "❌ کاربر پیدا نشد.",
+          show_alert: true,
+        })
+
+        return
+      }
+
+      db.prepare(`
+        UPDATE users
+        SET infinite_money = 1,
+            updated_at = ?
+        WHERE telegram_id = ?
+      `).run(
+        new Date().toISOString(),
+        targetId
+      )
+
       await ctx.answerCallbackQuery({
-        text:
-          "💰 مدیریت پول را در مرحله بعد اضافه می‌کنیم.",
-        show_alert: true,
+        text: "♾️ پول بی‌نهایت فعال شد.",
       })
+
+      await showUserDetails(
+        ctx,
+        targetId,
+        page
+      )
+    }
+  )
+
+  // =========================
+  // CALLBACK: DISABLE INFINITE MONEY
+  // =========================
+
+  bot.callbackQuery(
+    /^money_inf_off:(\d+):(\d+)$/,
+    async (ctx) => {
+
+      const requester = getUser(
+        ctx.from.id
+      )
+
+      if (!isOwner(requester)) {
+        await ctx.answerCallbackQuery({
+          text: "⛔ فقط مالک.",
+          show_alert: true,
+        })
+
+        return
+      }
+
+      const targetId = Number(
+        ctx.match[1]
+      )
+
+      const page = Number(
+        ctx.match[2]
+      )
+
+      const target = getUser(targetId)
+
+      if (!target) {
+        await ctx.answerCallbackQuery({
+          text: "❌ کاربر پیدا نشد.",
+          show_alert: true,
+        })
+
+        return
+      }
+
+      db.prepare(`
+        UPDATE users
+        SET infinite_money = 0,
+            updated_at = ?
+        WHERE telegram_id = ?
+      `).run(
+        new Date().toISOString(),
+        targetId
+      )
+
+      await ctx.answerCallbackQuery({
+        text: "✅ پول بی‌نهایت غیرفعال شد.",
+      })
+
+      await showUserDetails(
+        ctx,
+        targetId,
+        page
+      )
     }
   )
 
@@ -1696,4 +1901,4 @@ bot.command("removeinfmoney", async (ctx) => {
       })
     }
   )
-        }
+    }
