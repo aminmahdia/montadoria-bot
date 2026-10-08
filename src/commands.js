@@ -223,7 +223,7 @@ async function showUserDetails(ctx, targetId, page) {
     `Username: ${target.username ? "@" + target.username : "ندارد"}`,
     `🆔 ID: ${target.telegram_id}`,
     "",
-    `💰 Money: $${target.money}`,
+    `💰 Money: ${target.infinite_money ? "♾️" : "$" + target.money}`,
     `🏦 Bank: $${target.bank}`,
     `⭐ Level: ${target.level}`,
     `✨ XP: ${target.xp}`,
