@@ -11,6 +11,7 @@ db.exec(`
     username TEXT,
     display_name TEXT NOT NULL,
     money INTEGER NOT NULL DEFAULT 0,
+    infinite_money INTEGER NOT NULL DEFAULT 0,
     bank INTEGER NOT NULL DEFAULT 0,
     xp INTEGER NOT NULL DEFAULT 0,
     level INTEGER NOT NULL DEFAULT 1,
@@ -20,5 +21,20 @@ db.exec(`
     updated_at TEXT NOT NULL
   )
 `)
+
+const columns = db
+  .prepare(`PRAGMA table_info(users)`)
+  .all()
+
+const hasInfiniteMoney = columns.some(
+  (column) => column.name === "infinite_money"
+)
+
+if (!hasInfiniteMoney) {
+  db.exec(`
+    ALTER TABLE users
+    ADD COLUMN infinite_money INTEGER NOT NULL DEFAULT 0
+  `)
+}
 
 export default db
