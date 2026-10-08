@@ -822,7 +822,63 @@ export function registerCommands(bot) {
 
     await ctx.reply(`✅ Money = $${amount}`)
   })
+ bot.command("setinfmoney", async (ctx) => {
+  if (!isOwner(ctx.from.id)) {
+    return ctx.reply("⛔ فقط مالک می‌تواند این دستور را اجرا کند.")
+  }
 
+  const targetId = Number(ctx.match?.trim())
+
+  if (!Number.isInteger(targetId) || targetId <= 0) {
+    return ctx.reply("❌ شناسه کاربر را درست وارد کن.\nمثال:\n/setinfmoney 123456789")
+  }
+
+  const target = getUser(targetId)
+
+  if (!target) {
+    return ctx.reply("❌ کاربر پیدا نشد.")
+  }
+
+  db.prepare(`
+    UPDATE users
+    SET infinite_money = 1,
+        updated_at = ?
+    WHERE telegram_id = ?
+  `).run(new Date().toISOString(), targetId)
+
+  return ctx.reply(
+    `♾️ پول بی‌نهایت برای ${target.display_name} فعال شد.`
+  )
+})
+
+bot.command("removeinfmoney", async (ctx) => {
+  if (!isOwner(ctx.from.id)) {
+    return ctx.reply("⛔ فقط مالک می‌تواند این دستور را اجرا کند.")
+  }
+
+  const targetId = Number(ctx.match?.trim())
+
+  if (!Number.isInteger(targetId) || targetId <= 0) {
+    return ctx.reply("❌ شناسه کاربر را درست وارد کن.\nمثال:\n/removeinfmoney 123456789")
+  }
+
+  const target = getUser(targetId)
+
+  if (!target) {
+    return ctx.reply("❌ کاربر پیدا نشد.")
+  }
+
+  db.prepare(`
+    UPDATE users
+    SET infinite_money = 0,
+        updated_at = ?
+    WHERE telegram_id = ?
+  `).run(new Date().toISOString(), targetId)
+
+  return ctx.reply(
+    `✅ پول بی‌نهایت ${target.display_name} غیرفعال شد.`
+  )
+})
   // =========================
   // SET BANK
   // =========================
