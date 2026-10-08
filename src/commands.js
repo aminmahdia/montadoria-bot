@@ -48,10 +48,7 @@ export function registerCommands(bot) {
     UPDATE users
     SET role = 'owner', updated_at = ?
     WHERE telegram_id = ?
-  `).run(
-    now,
-    telegramId
-  )
+  `).run(now, telegramId)
     }
     
     if (!existingUser) {
