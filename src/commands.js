@@ -1004,7 +1004,7 @@ export function registerCommands(bot) {
       return
     }
 
-    const args = ctx.match.trim().split(/\s+/)
+    const args = (ctx.match || "").trim().split(/\s+/).filter(Boolean)
 
     if (args.length < 2) {
       await ctx.reply("استفاده:\n/setxp USER_ID AMOUNT")
@@ -1068,7 +1068,7 @@ export function registerCommands(bot) {
       return
     }
 
-    const args = ctx.match.trim().split(/\s+/)
+    const args = (ctx.match || "").trim().split(/\s+/).filter(Boolean)
 
     if (args.length < 2) {
       await ctx.reply("استفاده:\n/setlevel USER_ID LEVEL")
