@@ -8,6 +8,8 @@ const ROLES = {
   owner: "مالک",
 }
 
+const USERS_PER_PAGE = 8
+
 function getUser(telegramId) {
   return db
     .prepare(`
@@ -17,6 +19,17 @@ function getUser(telegramId) {
       WHERE telegram_id = ?
     `)
     .get(telegramId)
+}
+
+function getAllUsers() {
+  return db
+    .prepare(`
+      SELECT telegram_id, username, display_name,
+             money, bank, xp, level, role, job
+      FROM users
+      ORDER BY id ASC
+    `)
+    .all()
 }
 
 function isModeratorOrOwner(user) {
@@ -30,12 +43,28 @@ function isOwner(user) {
   return user && user.role === "owner"
 }
 
+/*
+  OWNER_ID فقط برای شناسایی اولیه مالک اصلی استفاده می‌شود.
+  اگر یک مالک در دیتابیس وجود داشته باشد، مالک قبلی دوباره
+  به صورت خودکار مالک نمی‌شود.
+*/
 function syncOwner(telegramId) {
   if (!OWNER_ID || telegramId !== OWNER_ID) return
 
+  const currentOwner = db
+    .prepare(`
+      SELECT telegram_id
+      FROM users
+      WHERE role = 'owner'
+      LIMIT 1
+    `)
+    .get()
+
+  if (currentOwner) return
+
   const user = getUser(telegramId)
 
-  if (user && user.role !== "owner") {
+  if (user) {
     db.prepare(`
       UPDATE users
       SET role = 'owner',
@@ -46,6 +75,261 @@ function syncOwner(telegramId) {
       telegramId
     )
   }
+}
+
+function safeNumber(value) {
+  const number = Number(value)
+
+  if (!Number.isFinite(number)) {
+    return null
+  }
+
+  return number
+}
+
+function userButtonName(user) {
+  const name = user.display_name || "Unknown"
+
+  if (name.length <= 30) {
+    return name
+  }
+
+  return name.slice(0, 27) + "..."
+}
+
+async function showUserList(ctx, page = 0) {
+  const requester = getUser(ctx.from.id)
+
+  if (!isOwner(requester)) {
+    await ctx.answerCallbackQuery({
+      text: "⛔ فقط مالک دسترسی دارد.",
+      show_alert: true,
+    })
+    return
+  }
+
+  const users = getAllUsers()
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(users.length / USERS_PER_PAGE)
+  )
+
+  if (page < 0) page = 0
+  if (page >= totalPages) page = totalPages - 1
+
+  const start = page * USERS_PER_PAGE
+  const pageUsers = users.slice(
+    start,
+    start + USERS_PER_PAGE
+  )
+
+  const keyboard = []
+
+  for (const user of pageUsers) {
+    keyboard.push([
+      {
+        text:
+          `${user.role === "owner" ? "👑" :
+            user.role === "moderator" ? "🛡️" : "👤"} ` +
+          userButtonName(user),
+        callback_data: `user_view:${user.telegram_id}:${page}`,
+      },
+    ])
+  }
+
+  const navigation = []
+
+  if (page > 0) {
+    navigation.push({
+      text: "◀️ قبلی",
+      callback_data: `user_page:${page - 1}`,
+    })
+  }
+
+  navigation.push({
+    text: `📄 ${page + 1}/${totalPages}`,
+    callback_data: "user_page_current",
+  })
+
+  if (page < totalPages - 1) {
+    navigation.push({
+      text: "بعدی ▶️",
+      callback_data: `user_page:${page + 1}`,
+    })
+  }
+
+  keyboard.push(navigation)
+
+  keyboard.push([
+    {
+      text: "🔄 بروزرسانی",
+      callback_data: `user_page:${page}`,
+    },
+    {
+      text: "↩️ بازگشت",
+      callback_data: "owner_panel",
+    },
+  ])
+
+  const text =
+    [
+      "👥 مدیریت کاربران",
+      "",
+      `تعداد کاربران: ${users.length}`,
+      "",
+      "برای مشاهده اطلاعات یک کاربر، روی نام او بزنید.",
+    ].join("\n")
+
+  await ctx.editMessageText(text, {
+    reply_markup: {
+      inline_keyboard: keyboard,
+    },
+  })
+
+  await ctx.answerCallbackQuery()
+}
+
+async function showUserDetails(ctx, targetId, page) {
+  const requester = getUser(ctx.from.id)
+
+  if (!isOwner(requester)) {
+    await ctx.answerCallbackQuery({
+      text: "⛔ فقط مالک دسترسی دارد.",
+      show_alert: true,
+    })
+    return
+  }
+
+  const target = getUser(targetId)
+
+  if (!target) {
+    await ctx.answerCallbackQuery({
+      text: "❌ کاربر پیدا نشد.",
+      show_alert: true,
+    })
+    return
+  }
+
+  const text = [
+    "👤 USER INFORMATION",
+    "",
+    `Name: ${target.display_name}`,
+    `Username: ${target.username ? "@" + target.username : "ندارد"}`,
+    `🆔 ID: ${target.telegram_id}`,
+    "",
+    `💰 Money: $${target.money}`,
+    `🏦 Bank: $${target.bank}`,
+    `⭐ Level: ${target.level}`,
+    `✨ XP: ${target.xp}`,
+    `💼 Job: ${target.job ?? "Unemployed"}`,
+    `🎭 Role: ${ROLES[target.role] ?? target.role}`,
+  ].join("\n")
+
+  const keyboard = [
+    [
+      {
+        text: "🎭 تغییر نقش",
+        callback_data: `user_role:${target.telegram_id}:${page}`,
+      },
+    ],
+    [
+      {
+        text: "💼 تغییر شغل",
+        callback_data: `user_job:${target.telegram_id}:${page}`,
+      },
+    ],
+    [
+      {
+        text: "💰 مدیریت پول",
+        callback_data: `user_money:${target.telegram_id}:${page}`,
+      },
+    ],
+    [
+      {
+        text: "⭐ مدیریت XP / Level",
+        callback_data: `user_xp:${target.telegram_id}:${page}`,
+      },
+    ],
+    [
+      {
+        text: "↩️ بازگشت به کاربران",
+        callback_data: `user_page:${page}`,
+      },
+    ],
+    [
+      {
+        text: "👑 پنل مالک",
+        callback_data: "owner_panel",
+      },
+    ],
+  ]
+
+  await ctx.editMessageText(text, {
+    reply_markup: {
+      inline_keyboard: keyboard,
+    },
+  })
+
+  await ctx.answerCallbackQuery()
+}
+
+async function showOwnerPanel(ctx) {
+  const user = getUser(ctx.from.id)
+
+  if (!isOwner(user)) {
+    await ctx.answerCallbackQuery({
+      text: "⛔ فقط مالک دسترسی دارد.",
+      show_alert: true,
+    })
+    return
+  }
+
+  await ctx.editMessageText(
+    [
+      "👑 MONTADORIA OWNER PANEL",
+      "",
+      "مدیریت کاربران:",
+      "از پنل شیشه‌ای کاربران برای مدیریت سریع استفاده کن.",
+      "",
+      "دستورات مستقیم:",
+      "/user ID",
+      "/setrole ID ROLE",
+      "/setjob ID JOB",
+      "/setmoney ID AMOUNT",
+      "/setbank ID AMOUNT",
+      "/setxp ID AMOUNT",
+      "/setlevel ID LEVEL",
+      "",
+      "مدیریت مالکیت:",
+      "/transferowner ID",
+      "/confirmtransfer",
+      "",
+      "سیستم:",
+      "/reset",
+      "/confirmreset",
+    ].join("\n"),
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "👥 مدیریت کاربران",
+              callback_data: "user_page:0",
+            },
+          ],
+          [
+            {
+              text: "🛡️ وضعیت مدیریت",
+              callback_data: "admin_status",
+            },
+          ],
+        ],
+      },
+    }
+  )
+
+  await ctx.answerCallbackQuery()
 }
 
 export function registerCommands(bot) {
@@ -65,28 +349,10 @@ export function registerCommands(bot) {
 
     const now = new Date().toISOString()
 
+    syncOwner(telegramId)
+
     let existingUser = getUser(telegramId)
 
-    // مالک اصلی
-    if (telegramId === OWNER_ID && existingUser) {
-      db.prepare(`
-        UPDATE users
-        SET role = 'owner',
-            username = ?,
-            display_name = ?,
-            updated_at = ?
-        WHERE telegram_id = ?
-      `).run(
-        username,
-        displayName,
-        now,
-        telegramId
-      )
-
-      existingUser = getUser(telegramId)
-    }
-
-    // ساخت کاربر جدید
     if (!existingUser) {
       const role =
         telegramId === OWNER_ID
@@ -126,7 +392,6 @@ export function registerCommands(bot) {
       return
     }
 
-    // بروزرسانی اطلاعات کاربر
     db.prepare(`
       UPDATE users
       SET username = ?,
@@ -140,9 +405,12 @@ export function registerCommands(bot) {
       telegramId
     )
 
+    existingUser = getUser(telegramId)
+
     await ctx.reply(
       `سلام ${displayName}! 👋\n\n` +
-      `به MONTADORIA خوش آمدی.`
+      `به MONTADORIA خوش آمدی.\n\n` +
+      `Role: ${ROLES[existingUser.role] ?? existingUser.role}`
     )
   })
 
@@ -283,7 +551,19 @@ export function registerCommands(bot) {
         "user",
         "moderator",
         "owner",
-      ].join("\n")
+      ].join("\n"),
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "👥 مدیریت کاربران",
+                callback_data: "user_page:0",
+              },
+            ],
+          ],
+        },
+      }
     )
   })
 
@@ -297,7 +577,9 @@ export function registerCommands(bot) {
     const requester = getUser(ctx.from.id)
 
     if (!isOwner(requester)) {
-      await ctx.reply("⛔ فقط مالک می‌تواند اطلاعات مدیریتی کاربران را ببیند.")
+      await ctx.reply(
+        "⛔ فقط مالک می‌تواند اطلاعات مدیریتی کاربران را ببیند."
+      )
       return
     }
 
@@ -351,7 +633,7 @@ export function registerCommands(bot) {
     if (args.length < 2) {
       await ctx.reply(
         "استفاده:\n/setrole USER_ID ROLE\n\n" +
-        "Role:\nuser\nmoderator\nowner"
+        "Role:\nuser\nmoderator"
       )
       return
     }
@@ -359,12 +641,20 @@ export function registerCommands(bot) {
     const targetId = Number(args[0])
     const newRole = args[1]
 
-    if (!ROLES[newRole]) {
+    if (newRole === "owner") {
+      await ctx.reply(
+        "⛔ تعیین مالک با /setrole مجاز نیست.\n\n" +
+        "برای انتقال مالکیت از /transferowner استفاده کنید."
+      )
+      return
+    }
+
+    if (!["user", "moderator"].includes(newRole)) {
       await ctx.reply("❌ Role نامعتبر است.")
       return
     }
 
-    if (targetId === OWNER_ID && newRole !== "owner") {
+    if (targetId === OWNER_ID) {
       await ctx.reply("⛔ مالک اصلی قابل تنزل نیست.")
       return
     }
@@ -460,9 +750,9 @@ export function registerCommands(bot) {
     }
 
     const targetId = Number(args[0])
-    const amount = Number(args[1])
+    const amount = safeNumber(args[1])
 
-    if (!Number.isFinite(amount) || amount < 0) {
+    if (amount === null || amount < 0) {
       await ctx.reply("❌ مبلغ نامعتبر است.")
       return
     }
@@ -510,9 +800,9 @@ export function registerCommands(bot) {
     }
 
     const targetId = Number(args[0])
-    const amount = Number(args[1])
+    const amount = safeNumber(args[1])
 
-    if (!Number.isFinite(amount) || amount < 0) {
+    if (amount === null || amount < 0) {
       await ctx.reply("❌ مبلغ نامعتبر است.")
       return
     }
@@ -560,9 +850,9 @@ export function registerCommands(bot) {
     }
 
     const targetId = Number(args[0])
-    const amount = Number(args[1])
+    const amount = safeNumber(args[1])
 
-    if (!Number.isFinite(amount) || amount < 0) {
+    if (amount === null || amount < 0) {
       await ctx.reply("❌ مقدار نامعتبر است.")
       return
     }
@@ -659,6 +949,11 @@ export function registerCommands(bot) {
       return
     }
 
+    if (targetId === ctx.from.id) {
+      await ctx.reply("❌ شما همین حالا مالک هستید.")
+      return
+    }
+
     const target = getUser(targetId)
 
     if (!target) {
@@ -704,136 +999,4 @@ export function registerCommands(bot) {
       return
     }
 
-    const target = getUser(pending.to)
-
-    if (!target) {
-      await ctx.reply("❌ کاربر مقصد پیدا نشد.")
-      bot.pendingOwnerTransfer = null
-      return
-    }
-
-    const now = new Date().toISOString()
-
-    const transaction = db.transaction(() => {
-      db.prepare(`
-        UPDATE users
-        SET role = 'user',
-            updated_at = ?
-        WHERE telegram_id = ?
-      `).run(now, ctx.from.id)
-
-      db.prepare(`
-        UPDATE users
-        SET role = 'owner',
-            updated_at = ?
-        WHERE telegram_id = ?
-      `).run(now, pending.to)
-    })
-
-    transaction()
-
-    bot.pendingOwnerTransfer = null
-
-    await ctx.reply(
-      `👑 مالکیت با موفقیت منتقل شد.\n\n` +
-      `مالک جدید: ${target.display_name}`
-    )
-  })
-
-  // =========================
-  // RESET
-  // =========================
-
-  bot.command("reset", async (ctx) => {
-    syncOwner(ctx.from.id)
-
-    const requester = getUser(ctx.from.id)
-
-    if (!isOwner(requester)) {
-      await ctx.reply("⛔ فقط مالک می‌تواند سیستم را Reset کند.")
-      return
-    }
-
-    await ctx.reply(
-      "⚠️ هشدار!\n\n" +
-      "این کار اطلاعات کاربران را پاک می‌کند.\n\n" +
-      "اگر مطمئنی، بنویس:\n" +
-      "/confirmreset"
-    )
-
-    bot.pendingReset = ctx.from.id
-  })
-
-  // =========================
-  // CONFIRM RESET
-  // =========================
-
-  bot.command("confirmreset", async (ctx) => {
-    syncOwner(ctx.from.id)
-
-    const requester = getUser(ctx.from.id)
-
-    if (!isOwner(requester)) {
-      await ctx.reply("⛔ فقط مالک.")
-      return
-    }
-
-    if (bot.pendingReset !== ctx.from.id) {
-      await ctx.reply("❌ درخواست Reset در انتظار تأیید نیست.")
-      return
-    }
-
-    db.prepare("DELETE FROM users").run()
-
-    const now = new Date().toISOString()
-
-    db.prepare(`
-      INSERT INTO users (
-        telegram_id,
-        username,
-        display_name,
-        money,
-        bank,
-        xp,
-        level,
-        role,
-        job,
-        created_at,
-        updated_at
-      )
-      VALUES (?, ?, ?, 0, 0, 0, 1, 'owner', NULL, ?, ?)
-    `).run(
-      ctx.from.id,
-      ctx.from.username ?? null,
-      [ctx.from.first_name, ctx.from.last_name]
-        .filter(Boolean)
-        .join(" ") || "Owner",
-      now,
-      now
-    )
-
-    bot.pendingReset = null
-
-    await ctx.reply(
-      "✅ Reset با موفقیت انجام شد.\n\n" +
-      "حساب مالک حفظ شد و سایر کاربران حذف شدند."
-    )
-  })
-
-  // =========================
-  // OWNER CHECK
-  // =========================
-
-  bot.command("ownercheck", async (ctx) => {
-    syncOwner(ctx.from.id)
-
-    const user = getUser(ctx.from.id)
-
-    if (!isOwner(user)) {
-      await ctx.reply("⛔ شما مالک نیستید.")
-      return
-    }
-
-    await ctx.reply("👑 مالکیت تأیید شد.")
-  })
-      }
+    const
