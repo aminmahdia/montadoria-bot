@@ -1,4 +1,4 @@
-import db from "./database.js"
+import db from "../database.js"
 
 export function registerCommands(bot) {
   bot.command("start", async (ctx) => {
