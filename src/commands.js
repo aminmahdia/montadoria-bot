@@ -1054,6 +1054,67 @@ export function registerCommands(bot) {
       `⭐ Level: ${newLevel}`
     )
   })
+  // =========================
+// TEST XP + AUTO LEVEL
+// =========================
+
+bot.command("testxp", async (ctx) => {
+  syncOwner(ctx.from.id)
+
+  const requester = getUser(ctx.from.id)
+
+  if (!isOwner(requester)) {
+    await ctx.reply("⛔ این دستور فقط برای آزمایش توسط مالک است.")
+    return
+  }
+
+  const args = (ctx.match || "").trim().split(/\s+/).filter(Boolean)
+
+  if (args.length < 2) {
+    await ctx.reply(
+      "روش استفاده:\n/testxp USER_ID AMOUNT\n\n" +
+      "مثال:\n/testxp 123456789 100"
+    )
+    return
+  }
+
+  const targetId = Number(args[0])
+  const amount = Number(args[1])
+
+  if (
+    !Number.isSafeInteger(targetId) ||
+    targetId <= 0 ||
+    !Number.isSafeInteger(amount) ||
+    amount <= 0
+  ) {
+    await ctx.reply("❌ شناسه کاربر و مقدار XP باید اعداد صحیح و معتبر باشند.")
+    return
+  }
+
+  const target = getUser(targetId)
+
+  if (!target) {
+    await ctx.reply("❌ کاربر پیدا نشد.")
+    return
+  }
+
+  const result = addXP(targetId, amount)
+
+  if (!result) {
+    await ctx.reply("❌ اعطای XP ناموفق بود.")
+    return
+  }
+
+  await ctx.reply(
+    `✅ پاداش XP ثبت شد.\n\n` +
+    `👤 کاربر: ${target.display_name}\n` +
+    `✨ XP قبلی: ${result.oldXP}\n` +
+    `✨ XP جدید: ${result.newXP}\n` +
+    `🎖 Level قبلی: ${result.oldLevel}\n` +
+    `🏆 Level جدید: ${result.newLevel}` +
+    (result.levelUp ? "\n\n🎉 کاربر Level Up شد!" : "")
+  )
+})
    // =========================
   // SET LEVEL
   // =========================
