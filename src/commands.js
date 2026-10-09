@@ -118,24 +118,24 @@ function calculateLevelFromXP(xp) {
 function addXP(telegramId, amount) {
   const user = getUser(telegramId)
 
-  if (!user) {
-    return null
-  }
+  if (!user) return null
 
   const xpAmount = Number(amount)
 
   if (
-    !Number.isFinite(xpAmount) ||
+    !Number.isSafeInteger(xpAmount) ||
     xpAmount <= 0
   ) {
     return null
   }
 
-  const newXP =
-    Math.floor(user.xp + xpAmount)
+  const newXP = user.xp + xpAmount
 
-  const newLevel =
-    calculateLevelFromXP(newXP)
+  if (!Number.isSafeInteger(newXP)) {
+    return null
+  }
+
+  const newLevel = calculateLevelFromXP(newXP)
 
   db.prepare(`
     UPDATE users
@@ -155,10 +155,11 @@ function addXP(telegramId, amount) {
     newXP,
     oldLevel: user.level,
     newLevel,
-    levelUp:
-      newLevel > user.level,
+    gainedXP: xpAmount,
+    levelUp: newLevel > user.level
   }
 }
+
 
 function userButtonName(user) {
   const name = user.display_name || "Unknown"
