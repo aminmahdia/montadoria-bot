@@ -1,5 +1,5 @@
 import { Bot } from "grammy"
-import { registerCommands } from "./src/commands.js"
+import { registerCommands } from "./commands.js"
 
 const token = process.env.TELEGRAM_BOT_TOKEN
 
