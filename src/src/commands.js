@@ -123,9 +123,9 @@ export function registerCommands(bot) {
     await ctx.reply("🏓 pong")
   })
 
-  bot.command("id", async (ctx) => {
+    bot.command("id", async (ctx) => {
     await ctx.reply(
       `Chat ID: ${ctx.chat.id}\nUser ID: ${ctx.from?.id ?? "unknown"}`
     )
   })
-        }
+}
