@@ -1,5 +1,6 @@
 import { Bot } from "grammy"
 import { registerCommands } from "./src/commands.js"
+import { registerObserver } from "./src/observer.js"
 
 const token = process.env.TELEGRAM_BOT_TOKEN
 
@@ -11,6 +12,7 @@ if (!token) {
 const bot = new Bot(token)
 
 registerCommands(bot)
+registerObserver(bot)
 
 bot.catch((err) => {
   console.error("Bot error:", err.error ?? err)

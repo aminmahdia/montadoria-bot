@@ -398,6 +398,45 @@ export function registerObserver(bot) {
     )
   `);
 
+  // تبدیل زمان‌های متنی قدیمی به زمان عددی یونیکس
+  const normalizeUnixSeconds = value => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.floor(value);
+    }
+    if (typeof value !== "string" || !value.trim()) return null;
+
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return Math.floor(numeric);
+
+    const milliseconds = Date.parse(value);
+    return Number.isFinite(milliseconds)
+      ? Math.floor(milliseconds / 1000)
+      : null;
+  };
+
+  const normalizeTimestampColumn = (table, column) => {
+    const rows = db.prepare(
+      `SELECT telegram_id, ${column} AS value
+       FROM ${table}
+       WHERE typeof(${column}) = 'text'`
+    ).all();
+
+    const update = db.prepare(
+      `UPDATE ${table} SET ${column} = ? WHERE telegram_id = ?`
+    );
+
+    for (const row of rows) {
+      const timestamp = normalizeUnixSeconds(row.value);
+      if (timestamp !== null) {
+        update.run(timestamp, row.telegram_id);
+      }
+    }
+  };
+
+  normalizeTimestampColumn("observer_races", "updated_at");
+  normalizeTimestampColumn("observer_races", "last_blood_reminder_at");
+  normalizeTimestampColumn("observer_needs", "last_blood_at");
+
   const raceAliases = {
     "انسان": "انسان",
     "human": "انسان",
@@ -522,7 +561,7 @@ export function registerObserver(bot) {
       return;
     }
 
-    const currentTime = now();
+    const currentTime = Math.floor(Date.now() / 1000);
 
     db.prepare(`
       INSERT INTO observer_races
@@ -564,7 +603,7 @@ export function registerObserver(bot) {
 
   // یادآوری خون‌آشام‌ها هر ۱۲ ساعت؛ پیام فقط در پی‌وی خود شخص
   const checkVampireBloodReminders = async () => {
-    const currentTime = now();
+    const currentTime = Math.floor(Date.now() / 1000);
     const twelveHoursAgo = currentTime - 12 * 60 * 60;
 
     const dueUsers = db.prepare(`
@@ -977,7 +1016,7 @@ export function registerObserver(bot) {
       line => line.trim().split(/\s+/)[0] === "#خون"
     );
     if (hasBloodTag) {
-      const bloodTime = now();
+      const bloodTime = Math.floor(Date.now() / 1000);
       db.prepare(`
         INSERT OR IGNORE INTO observer_needs
           (telegram_id, last_blood_at, updated_at)
