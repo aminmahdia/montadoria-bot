@@ -68,6 +68,19 @@ db.exec(`
   );
 `);
 
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS observer_restrictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER NOT NULL,
+    username TEXT,
+    restricted_until TEXT NOT NULL,
+    restored_at TEXT,
+    created_at TEXT NOT NULL,
+    affected_groups TEXT NOT NULL DEFAULT '[]'
+  );
+`);
+
 const now = () => new Date().toISOString();
 
 function isOwner(ctx) {
@@ -116,6 +129,134 @@ async function report(bot, text) {
     });
   } catch (error) {
     console.error("Observer report failed:", error.message);
+  }
+}
+
+
+async function restrictAcrossGroups(api, telegramId, username = "") {
+  const groups = db.prepare(`
+    SELECT chat_id, title
+    FROM rp_groups
+    WHERE active = 1
+  `).all();
+
+  if (!groups.length) {
+    await report(api, "⚠️ محدودیت اعمال نشد؛ گروه نقش‌آفرینی فعالی ثبت نشده است.");
+    return;
+  }
+
+  const untilUnix =
+    Math.floor(Date.now() / 1000) + RESTRICTION_MINUTES * 60;
+  const restrictedUntil = new Date(untilUnix * 1000).toISOString();
+  const successful = [];
+  const failed = [];
+
+  for (const group of groups) {
+    try {
+      await api.restrictChatMember(
+        group.chat_id,
+        telegramId,
+        {
+          can_send_messages: false,
+          can_send_audios: false,
+          can_send_documents: false,
+          can_send_photos: false,
+          can_send_videos: false,
+          can_send_video_notes: false,
+          can_send_voice_notes: false,
+          can_send_polls: false,
+          can_send_other_messages: false,
+          can_add_web_page_previews: false
+        },
+        { until_date: untilUnix }
+      );
+
+      successful.push({
+        chat_id: group.chat_id,
+        title: group.title || ""
+      });
+    } catch (error) {
+      failed.push({
+        chat_id: group.chat_id,
+        title: group.title || "",
+        error: error.message || String(error)
+      });
+      console.error(
+        "Restriction failed:",
+        group.chat_id,
+        telegramId,
+        error.message || error
+      );
+    }
+  }
+
+  if (!successful.length) {
+    await report(
+      api,
+      `⚠️ محدودیت کاربر ${telegramId} در هیچ گروهی اعمال نشد. ` +
+      `بررسی کن ربات در گروه‌ها مجوز محدودکردن اعضا را داشته باشد.`
+    );
+    return;
+  }
+
+  db.prepare(`
+    INSERT INTO observer_restrictions
+      (telegram_id, username, restricted_until, restored_at,
+       created_at, affected_groups)
+    VALUES (?, ?, ?, NULL, ?, ?)
+  `).run(
+    telegramId,
+    username || null,
+    restrictedUntil,
+    now(),
+    JSON.stringify(successful)
+  );
+
+  await report(
+    api,
+    `🔇 <b>محدودیت نقش‌آفرینی اعمال شد</b>\n` +
+    `شناسه کاربر: <code>${telegramId}</code>\n` +
+    `مدت: ${RESTRICTION_MINUTES} دقیقه\n` +
+    `گروه‌های موفق: ${successful.length}/${groups.length}\n` +
+    (failed.length
+      ? `گروه‌های ناموفق: ${failed.map(g =>
+          escapeHtml(g.title || String(g.chat_id))
+        ).join("، ")}`
+      : "محدودیت در تمام گروه‌های فعال اعمال شد.")
+  );
+}
+
+async function restoreExpiredRestrictions(bot) {
+  const currentTime = now();
+
+  const expired = db.prepare(`
+    SELECT id, telegram_id
+    FROM observer_restrictions
+    WHERE restored_at IS NULL
+      AND restricted_until <= ?
+  `).all(currentTime);
+
+  if (!expired.length) return;
+
+  const markRestored = db.prepare(`
+    UPDATE observer_restrictions
+    SET restored_at = ?
+    WHERE id = ? AND restored_at IS NULL
+  `);
+
+  let restoredCount = 0;
+
+  for (const item of expired) {
+    const result = markRestored.run(currentTime, item.id);
+    restoredCount += result.changes;
+  }
+
+  if (restoredCount) {
+    await report(
+      bot.api,
+      `✅ مدت محدودیت ${restoredCount} مورد به پایان رسید. ` +
+      `تلگرام محدودیت زمان‌دار را به‌صورت خودکار منقضی می‌کند.`
+    );
   }
 }
 
