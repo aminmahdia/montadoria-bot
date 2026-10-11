@@ -244,6 +244,44 @@ db.exec(`
 
 
   // ثبت هویت: /rpidentity شناسه کدشخصیت نامشخصیت
+
+
+  // ذخیره عکس کارت: مالک باید به پیام عکس پاسخ دهد.
+
+  // تأیید هویت: /rpidentityapprove شناسه
+
+// مدیریت پایدار نیازهای شخصیت
+function ensureNeeds(telegramId) {
+  db.prepare(`
+    INSERT OR IGNORE INTO observer_needs (telegram_id, updated_at)
+    VALUES (?, ?)
+  `).run(telegramId, now());
+
+  return db.prepare(`
+    SELECT * FROM observer_needs WHERE telegram_id = ?
+  `).get(telegramId);
+}
+
+function updateNeed(telegramId, field) {
+  const allowedFields = {
+    food: "last_food_at",
+    sleep: "last_sleep_at",
+    blood: "last_blood_at"
+  };
+
+  const column = allowedFields[field];
+  if (!column) throw new Error("Unknown need field");
+
+  ensureNeeds(telegramId);
+  db.prepare(`
+    UPDATE observer_needs
+    SET ${column} = ?, updated_at = ?
+    WHERE telegram_id = ?
+  `).run(now(), now(), telegramId);
+}
+
+export function registerObserver(bot) {
+
   bot.command("rpidentity", async ctx => {
     if (!isOwner(ctx)) {
       return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
@@ -279,8 +317,6 @@ db.exec(`
     );
   });
 
-
-  // ذخیره عکس کارت: مالک باید به پیام عکس پاسخ دهد.
   bot.command("rpidentityphoto", async ctx => {
     if (!isOwner(ctx)) {
       return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
@@ -328,7 +364,6 @@ db.exec(`
     );
   });
 
-  // تأیید هویت: /rpidentityapprove شناسه
   bot.command("rpidentityapprove", async ctx => {
     if (!isOwner(ctx)) {
       return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
@@ -355,37 +390,6 @@ db.exec(`
     return ctx.reply(`✅ هویت کاربر ${telegramId} تأیید شد.`);
   });
 
-// مدیریت پایدار نیازهای شخصیت
-function ensureNeeds(telegramId) {
-  db.prepare(`
-    INSERT OR IGNORE INTO observer_needs (telegram_id, updated_at)
-    VALUES (?, ?)
-  `).run(telegramId, now());
-
-  return db.prepare(`
-    SELECT * FROM observer_needs WHERE telegram_id = ?
-  `).get(telegramId);
-}
-
-function updateNeed(telegramId, field) {
-  const allowedFields = {
-    food: "last_food_at",
-    sleep: "last_sleep_at",
-    blood: "last_blood_at"
-  };
-
-  const column = allowedFields[field];
-  if (!column) throw new Error("Unknown need field");
-
-  ensureNeeds(telegramId);
-  db.prepare(`
-    UPDATE observer_needs
-    SET ${column} = ?, updated_at = ?
-    WHERE telegram_id = ?
-  `).run(now(), now(), telegramId);
-}
-
-export function registerObserver(bot) {
 
   // MONTADORIA_RACE_SYSTEM_V1
   db.exec(`
