@@ -524,24 +524,162 @@ export function registerCommands(bot) {
     )
   })
 
+  // =========================
+  // MONTADORIA GUIDE PANEL
+  // =========================
+
+  const guidePages = {
+    home: `༺⟡ 𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀 ⟡༻
+
+          دفترچه راهنمای قلمرو
+
+به مونتادوریا خوش آمدی؛
+جایی که هر انتخاب، بخشی از داستان توست.
+
+از دکمه‌های زیر برای آشنایی با امکانات
+و قوانین این قلمرو استفاده کن.`,
+
+    basics: `༺ راهنمای آغازین ༻
+
+/start — شروع کار با ربات
+/help — بازکردن دفترچه راهنما
+/ping — بررسی پاسخ‌گویی ربات
+/id — نمایش شناسه تلگرام
+
+می‌توانی این فرمان‌ها را در گفت‌وگوی
+خصوصی یا گروهی که ربات در آن فعال است
+استفاده کنی.`,
+
+    profile: `༺ هویت و پروفایل ༻
+
+/profile — نمایش پروفایل ثبت‌شده
+
+اطلاعاتی مانند نقش، شغل، سطح و وضعیت
+مالی بر اساس داده‌های ثبت‌شده نمایش
+داده می‌شوند.
+
+داشتن پول یا خرید یک وسیله به‌تنهایی
+به معنی مهارت یا قدرت بیشتر نیست.`,
+
+    economy: `༺ خزانه و دارایی ༻
+
+دارایی‌های ثبت‌شده در سیستم مالی ربات
+نگهداری می‌شوند.
+
+موجودی، بانک و انتقال پول باید مطابق
+روش‌های مالی فعال در ربات انجام شوند.
+
+اطلاعات مالی را صرفاً با نوشتن یک پیام
+در نقش‌آفرینی تغییر‌یافته فرض نکن.`,
+
+    rp: `༺ آداب نقش‌آفرینی ༻
+
+در گروه‌های نقش‌آفرینی، قالب پیام‌ها
+و تگ‌های مورد تأیید همان گروه را رعایت کن.
+
+دیالوگ و کنش شخصیت را روشن بنویس تا
+دیگران بتوانند واکنش مناسبی نشان دهند.
+
+قواعد نقش‌آفرینی مخصوص گروه‌های ثبت‌شده
+هستند و نباید به گفت‌وگوی آزاد تعمیم داده
+شوند.`,
+
+    staff: `༺ مدیریت و نظارت ༻
+
+/​admin — بررسی وضعیت مدیریت
+/rpadd — ثبت گروه فعلی به‌عنوان گروه RP
+/rpremove — غیرفعال‌کردن ثبت گروه
+/rpgroups — مشاهده گروه‌های ثبت‌شده
+
+فرمان‌های مدیریتی فقط برای حساب‌های
+دارای دسترسی لازم قابل استفاده‌اند.
+
+راهنمای ناظر و مالک یکسان است.`
+  };
+
+  function guideKeyboard(user, page) {
+    const rows = [];
+
+    if (page === "home") {
+      rows.push(
+        [
+          { text: "📜 راهنمای آغازین", callback_data: "guide:basics" },
+          { text: "🪪 هویت و پروفایل", callback_data: "guide:profile" }
+        ],
+        [
+          { text: "🏦 خزانه و دارایی", callback_data: "guide:economy" },
+          { text: "🐺 نقش‌آفرینی", callback_data: "guide:rp" }
+        ]
+      );
+
+      if (isModeratorOrOwner(user)) {
+        rows.push([
+          { text: "🛡 مدیریت و نظارت", callback_data: "guide:staff" }
+        ]);
+      }
+    } else {
+      rows.push([
+        { text: "↩ بازگشت به دفترچه", callback_data: "guide:home" }
+      ]);
+    }
+
+    return { inline_keyboard: rows };
+  }
+
+  async function renderGuide(ctx, page = "home", edit = false) {
+    const user = getUser(ctx.from.id);
+
+    if (!guidePages[page]) page = "home";
+
+    if (page === "staff" && !isModeratorOrOwner(user)) {
+      if (edit) {
+        await ctx.answerCallbackQuery({
+          text: "⛔ دسترسی به این بخش را نداری.",
+          show_alert: true
+        });
+      } else {
+        await ctx.reply("⛔ دسترسی به این بخش را نداری.");
+      }
+      return;
+    }
+
+    if (edit) {
+      await ctx.editMessageText(guidePages[page], {
+        reply_markup: guideKeyboard(user, page)
+      });
+    } else {
+      await ctx.reply(guidePages[page], {
+        reply_markup: guideKeyboard(user, page)
+      });
+    }
+  }
+
   bot.command("help", async (ctx) => {
-    await ctx.reply(
-      [
-        "🤖 MONTADORIA",
-        "",
-        "دستورات:",
-        "/start — شروع ربات",
-        "/profile — پروفایل",
-        "/help — راهنما",
-        "/ping — وضعیت ربات",
-        "/id — شناسه",
-        "",
-        "دستورات مدیریتی:",
-        "/owner — پنل مالک",
-        "/admin — وضعیت مدیریت",
-      ].join("\n")
-    )
-  })
+    await renderGuide(ctx);
+  });
+
+  bot.hears(/^(راهنما|دفترچه قلمرو|راهنمای مونتادوریا)$/i, async (ctx) => {
+    await renderGuide(ctx);
+  });
+
+  bot.callbackQuery(
+    /^guide:(home|basics|profile|economy|rp|staff)$/,
+    async (ctx) => {
+      const page = ctx.match[1];
+      const user = getUser(ctx.from.id);
+
+      if (page === "staff" && !isModeratorOrOwner(user)) {
+        await ctx.answerCallbackQuery({
+          text: "⛔ دسترسی به این بخش را نداری.",
+          show_alert: true
+        });
+        return;
+      }
+
+      await ctx.answerCallbackQuery();
+      await renderGuide(ctx, page, true);
+    }
+  );
 
   bot.command("ping", async (ctx) => {
     await ctx.reply("🏓 pong")
