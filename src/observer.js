@@ -117,21 +117,27 @@ function escapeHtml(value = "") {
   })[char]);
 }
 
-async function report(bot, text) {
+async function report(botOrApi, text) {
   if (!OBSERVER_GROUP_ID) {
     console.warn("[OBSERVER REPORT]", text);
     return;
   }
 
+  const api = botOrApi?.api ?? botOrApi;
+
+  if (!api || typeof api.sendMessage !== "function") {
+    console.error("Observer report failed: Telegram API unavailable.");
+    return;
+  }
+
   try {
-    await bot.api.sendMessage(OBSERVER_GROUP_ID, text, {
+    await api.sendMessage(OBSERVER_GROUP_ID, text, {
       parse_mode: "HTML"
     });
   } catch (error) {
     console.error("Observer report failed:", error.message);
   }
 }
-
 
 async function restrictAcrossGroups(api, telegramId, username = "") {
   const groups = db.prepare(`
@@ -888,6 +894,118 @@ export function registerObserver(bot) {
       parse_mode: "HTML"
     });
   });
+
+  // رفع دستی سکوت یک کاربر در گروه‌های نقش‌آفرینی
+  bot.command("rpunmute", async ctx => {
+    if (!isOwner(ctx)) {
+      return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
+    }
+
+    const targetId = Number((ctx.match || "").trim());
+
+    if (!Number.isSafeInteger(targetId) || targetId <= 0) {
+      return ctx.reply("روش استفاده: /rpunmute شناسه_تلگرام");
+    }
+
+    const groups = db.prepare(`
+      SELECT chat_id, title
+      FROM rp_groups
+      WHERE active = 1
+    `).all();
+
+    if (!groups.length) {
+      return ctx.reply("⚠️ هیچ گروه نقش‌آفرینی فعالی ثبت نشده است.");
+    }
+
+    const successful = [];
+    const failed = [];
+
+    const allowAllPermissions = {
+      can_send_messages: true,
+      can_send_audios: true,
+      can_send_documents: true,
+      can_send_photos: true,
+      can_send_videos: true,
+      can_send_video_notes: true,
+      can_send_voice_notes: true,
+      can_send_polls: true,
+      can_send_other_messages: true,
+      can_add_web_page_previews: true
+    };
+
+    for (const group of groups) {
+      try {
+        const chat = await ctx.api.getChat(group.chat_id);
+        const defaults = chat.permissions;
+
+        // در صورت وجود مجوزهای پیش‌فرض گروه، همان‌ها بازگردانده می‌شوند.
+        const permissions = defaults
+          ? Object.fromEntries(
+              Object.keys(allowAllPermissions).map(key => [
+                key,
+                defaults[key] === true
+              ])
+            )
+          : { ...allowAllPermissions };
+
+        await ctx.api.restrictChatMember(
+          group.chat_id,
+          targetId,
+          permissions
+        );
+
+        successful.push(group);
+      } catch (error) {
+        failed.push({
+          chat_id: group.chat_id,
+          title: group.title || String(group.chat_id),
+          message: error.message
+        });
+      }
+    }
+
+    // فقط وقتی رفع محدودیت در تمام گروه‌ها موفق بود،
+    // رکوردهای محدودیت فعال در پایگاه داده بسته می‌شوند.
+    if (failed.length === 0) {
+      db.prepare(`
+        UPDATE observer_restrictions
+        SET restored_at = ?
+        WHERE telegram_id = ? AND restored_at IS NULL
+      `).run(now(), targetId);
+    }
+
+    audit(
+      ctx.from.id,
+      "manual_unmute",
+      `telegram_id=${targetId};success=${successful.length};failed=${failed.length}`
+    );
+
+    const failureDetails = failed.length
+      ? "\\n\\n<b>گروه‌های ناموفق:</b>\\n" +
+        failed.map(group =>
+          `${escapeHtml(group.title)}: ${escapeHtml(group.message)}`
+        ).join("\\n")
+      : "";
+
+    await report(
+      ctx.api,
+      `🔊 <b>گزارش رفع سکوت دستی</b>\\n` +
+      `کاربر: <code>${targetId}</code>\\n` +
+      `موفق: ${successful.length} از ${groups.length} گروه\\n` +
+      `ناموفق: ${failed.length}` +
+      failureDetails
+    );
+
+    return ctx.reply(
+      `🔊 نتیجه رفع سکوت کاربر ${targetId}\\n` +
+      `✅ موفق: ${successful.length} گروه\\n` +
+      `❌ ناموفق: ${failed.length} گروه` +
+      (failed.length
+        ? "\\nبرای گروه‌های ناموفق، گزارش و خطا بررسی شود."
+        : "\\nمحدودیت‌های ثبت‌شده با موفقیت برداشته شدند.")
+    );
+  });
+
 
   // پاک‌کردن اخطارهای فعال یک کاربر: /rpclear ID
   bot.command("rpclear", async ctx => {
