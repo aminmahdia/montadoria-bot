@@ -12,15 +12,29 @@ db.exec(`
   )
 `)
 
+function normalizeLabel(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF\u00AD]/g, "")
+    .replace(/[\u00A0\u2007\u202F]/g, " ")
+    .replace(/[\u{1D400}-\u{1D419}]/gu, c =>
+      String.fromCharCode(c.codePointAt(0) - 0x1D400 + 65))
+    .replace(/[\u{1D41A}-\u{1D433}]/gu, c =>
+      String.fromCharCode(c.codePointAt(0) - 0x1D41A + 97))
+    .replace(/[\u{1D7CE}-\u{1D7D7}]/gu, c =>
+      String.fromCharCode(c.codePointAt(0) - 0x1D7CE + 48))
+    .trim()
+}
+
 function getField(caption, pattern) {
-  for (const line of caption.split(/\r?\n/)) {
-    if (pattern.test(line)) {
-      return line.replace(/^[^:]*:\s*/, "").trim()
+  for (const line of String(caption ?? "").split(/\r?\n/)) {
+    const normalized = normalizeLabel(line)
+    if (pattern.test(normalized)) {
+      return normalized.replace(/^[^:]*:\s*/, "").trim()
     }
   }
   return null
 }
-
 function saveRegistration(ctx) {
   const post = ctx.channelPost || ctx.update?.channel_post
   if (!post || post.chat?.username?.toLowerCase() !== "roleregistration1") {
