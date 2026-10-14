@@ -506,22 +506,52 @@ export function registerCommands(bot) {
       return
     }
 
-    await ctx.reply(
-      [
-        "👤 PROFILE",
+    const profileText = [
+        "༺⟡ 𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀 ⟡༻",
         "",
-        `Name: ${user.display_name}`,
-        `Username: ${user.username ? "@" + user.username : "ندارد"}`,
-        `🆔 ID: ${user.telegram_id}`,
+        "      شناسنامهٔ رسمی قلمرو",
+        "━━━━━━━━━━━━━━━━━━",
         "",
-        `💰 Money: ${user.infinite_money ? "♾️" : "$" + user.money}`,
-        `🏦 Bank: $${user.bank}`,
-        `⭐ Level: ${user.level}`,
-        `✨ XP: ${user.xp}`,
-        `💼 Job: ${user.job ?? "Unemployed"}`,
-        `🎭 Role: ${ROLES[user.role] ?? user.role}`,
+        `👤 نام حساب: ${user.display_name}`,
+        `🔰 نام کاربری: ${user.username ? "@" + user.username : "ثبت نشده"}`,
+        `🆔 شناسهٔ شهروند: ${user.telegram_id}`,
+        "",
+        `💰 دارایی نقدی: ${user.infinite_money ? "♾️ نامحدود" : user.money}`,
+        `🏦 موجودی خزانه: ${user.bank}`,
+        `⭐ سطح شخصیت: ${user.level}`,
+        `✨ امتیاز تجربه: ${user.xp}`,
+        `⚒ پیشه: ${user.job ?? "بدون شغل"}`,
+        `🏛 جایگاه در قلمرو: ${ROLES[user.role] ?? user.role}`,
+        "",
+        "༺ امضای رسمی مونتادوریا ༻",
       ].join("\n")
-    )
+
+  const registration = db.prepare(`
+    SELECT character_name, registration_code, celebrity_name,
+           telegram_username, photo_file_id
+    FROM character_registrations
+    WHERE telegram_username = ? COLLATE NOCASE
+  `).get((ctx.from.username || user.username || "").replace(/^@/, ""))
+
+  const registrationText = registration
+    ? [
+        `🎭 نام رول: ${registration.character_name}`,
+        `🔢 کد اختصاصی: ${registration.registration_code}`,
+        `👤 نام واقعی سلبریتی: ${registration.celebrity_name}`,
+        `🔰 نام کاربری ثبت‌شده: @${registration.telegram_username}`,
+        `🆔 شناسه تلگرام: ${user.telegram_id}`,
+      ].join("\\n")
+    : "🎭 شناسنامه‌ای برای این نام کاربری در کانال ثبت نشده است."
+
+  const fullProfileText = `${profileText}\\n\\n━━━━━━━━━━━━━━━━━━\\n${registrationText}`
+
+  if (registration?.photo_file_id) {
+    await ctx.replyWithPhoto(registration.photo_file_id, {
+      caption: fullProfileText
+    })
+  } else {
+    await ctx.reply(fullProfileText)
+  }
   })
 
   // =========================
