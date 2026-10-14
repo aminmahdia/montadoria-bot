@@ -46,7 +46,7 @@ function saveRegistration(ctx) {
   const code = getField(caption, /^\s*Code\s*:/i)
   const celebrityName = getField(
     caption,
-    /^\s*(?:Celebrity|Seleb(?:\[rity\])?)\s+Name\s*:/i
+    /^\s*(?:Celebrity|Cele[bB]rity|Seleb(?:rity)?)\s+Name\s*:/i
   )
   const rawUsername = getField(caption, /^\s*Username\s*:/i)
   const username = rawUsername?.replace(/^@/, "").trim()
