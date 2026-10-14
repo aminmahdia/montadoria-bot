@@ -523,7 +523,9 @@ export function registerCommands(bot) {
         `⚒ پیشه: ${user.job ?? "بدون شغل"}`,
         `🏛 جایگاه در قلمرو: ${ROLES[user.role] ?? user.role}`,
         "",
-        "༺ امضای رسمی مونتادوریا ༻",
+        "╔═══⟡༺𓃦༻⟡═══╗",
+    "             𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀",
+    "╚═══⟡༺𓃦༻⟡═══╝",
       ].join("\n")
 
   const registration = db.prepare(`
@@ -540,10 +542,10 @@ export function registerCommands(bot) {
         `👤 نام واقعی سلبریتی: ${registration.celebrity_name}`,
         `🔰 نام کاربری ثبت‌شده: @${registration.telegram_username}`,
         `🆔 شناسه تلگرام: ${user.telegram_id}`,
-      ].join("\\n")
+      ].join("\n")
     : "🎭 شناسنامه‌ای برای این نام کاربری در کانال ثبت نشده است."
 
-  const fullProfileText = `${profileText}\\n\\n━━━━━━━━━━━━━━━━━━\\n${registrationText}`
+  const fullProfileText = `${profileText}\n\n━━━━━━━━━━━━━━━━━━\n${registrationText}`
 
   if (registration?.photo_file_id) {
     await ctx.replyWithPhoto(registration.photo_file_id, {

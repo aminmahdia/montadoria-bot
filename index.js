@@ -1,4 +1,4 @@
-import { Bot } from "grammy"
+import { Bot, API_CONSTANTS } from "grammy"
 import { registerCommands } from "./src/commands.js"
 import { registerObserver } from "./src/observer.js"
 import { registerRegistrations } from "./src/registrations.js"
@@ -23,6 +23,7 @@ bot.catch((err) => {
 console.log("MONTADORIA bot is starting...")
 
 bot.start({
+  allowed_updates: API_CONSTANTS.DEFAULT_UPDATE_TYPES,
   onStart: (botInfo) => {
     console.log(`Bot started as @${botInfo.username}`)
   },
