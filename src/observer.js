@@ -39,6 +39,14 @@ db.exec(`
     added_by INTEGER,
     created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS free_chat_groups (
+    chat_id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    added_by INTEGER,
+    created_at INTEGER
+  );
+
 
   CREATE TABLE IF NOT EXISTS observer_warnings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -895,6 +903,90 @@ export function registerObserver(bot) {
     });
   });
 
+
+  // مدیریت گروه‌های چت آزاد ـ فقط مالک
+
+  bot.command("freechatadd", async ctx => {
+    if (!isOwner(ctx.from?.id)) {
+      await ctx.reply("⛔ این دستور فقط برای مالک است.");
+      return;
+    }
+
+    if (!["group", "supergroup"].includes(ctx.chat?.type)) {
+      await ctx.reply("این دستور را داخل گروه موردنظر اجرا کن.");
+      return;
+    }
+
+    const chatId = ctx.chat.id;
+    const title = String(ctx.chat.title || chatId).replace(/\s+/g, " ").trim();
+
+    db.prepare(`
+      INSERT INTO free_chat_groups
+        (chat_id, title, active, added_by, created_at)
+      VALUES (?, ?, 1, ?, ?)
+      ON CONFLICT(chat_id) DO UPDATE SET
+        title = excluded.title,
+        active = 1,
+        added_by = excluded.added_by,
+        created_at = excluded.created_at
+    `).run(chatId, title, ctx.from.id, now());
+
+    db.prepare(
+      "UPDATE rp_groups SET active = 0 WHERE chat_id = ?"
+    ).run(chatId);
+
+    await ctx.reply("✅ این گروه به فهرست چت‌های آزاد اضافه شد.");
+  });
+
+  bot.command("freechatremove", async ctx => {
+    if (!isOwner(ctx.from?.id)) {
+      await ctx.reply("⛔ این دستور فقط برای مالک است.");
+      return;
+    }
+
+    if (!["group", "supergroup"].includes(ctx.chat?.type)) {
+      await ctx.reply("این دستور را داخل همان گروه اجرا کن.");
+      return;
+    }
+
+    const result = db.prepare(`
+      UPDATE free_chat_groups
+      SET active = 0
+      WHERE chat_id = ? AND active = 1
+    `).run(ctx.chat.id);
+
+    await ctx.reply(
+      result.changes
+        ? "✅ گروه از فهرست چت‌های آزاد حذف شد."
+        : "این گروه در فهرست فعال چت آزاد نیست."
+    );
+  });
+
+  bot.command("freechatgroups", async ctx => {
+    if (!isOwner(ctx.from?.id)) {
+      await ctx.reply("⛔ این دستور فقط برای مالک است.");
+      return;
+    }
+
+    const rows = db.prepare(`
+      SELECT chat_id, title
+      FROM free_chat_groups
+      WHERE active = 1
+      ORDER BY title COLLATE NOCASE
+    `).all();
+
+    if (!rows.length) {
+      await ctx.reply("هنوز گروه چت آزادی ثبت نشده است.");
+      return;
+    }
+
+    const lines = rows.map(
+      (row, i) => `${i + 1}. ${escapeHtml(row.title)} — ${row.chat_id}`
+    );
+
+    await ctx.reply("📋 فهرست گروه‌های چت آزاد:\n\n" + lines.join("\n"));
+  });
+
   // رفع دستی سکوت یک کاربر در گروه‌های نقش‌آفرینی
   bot.command("rpunmute", async ctx => {
     if (!isOwner(ctx)) {
@@ -1117,6 +1209,9 @@ export function registerObserver(bot) {
       `/rpadd — ثبت گروه فعلی\n` +
       `/rpremove — غیرفعال‌کردن گروه فعلی\n` +
       `/rpgroups — فهرست گروه‌ها\n` +
+      `/freechatadd — ثبت گروه چت آزاد\n` +
+      `/freechatremove — حذف گروه چت آزاد\n` +
+      `/freechatgroups — فهرست چت‌های آزاد\n` +
       `/rpwarnings شناسه — مشاهده اخطارها\n` +
       `/rpclear شناسه — پاک‌کردن اخطارها\n` +
       `/rpstatus — وضعیت کلی`,

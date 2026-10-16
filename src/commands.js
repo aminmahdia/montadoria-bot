@@ -496,7 +496,7 @@ export function registerCommands(bot) {
     )
   })
 
-  bot.command("profile", async (ctx) => {
+  const showOwnProfile = async (ctx) => {
     syncOwner(ctx.from.id)
 
     const user = getUser(ctx.from.id)
@@ -554,7 +554,12 @@ export function registerCommands(bot) {
   } else {
     await ctx.reply(fullProfileText)
   }
-  })
+  };
+
+  bot.command("profile", showOwnProfile);
+  bot.hears(/^(?:\/)?(?:رول|پروفایل)(?:@\w+)?$/u, showOwnProfile);
+
+
 
   // =========================
   // MONTADORIA GUIDE PANEL
@@ -584,7 +589,7 @@ export function registerCommands(bot) {
 
     profile: `༺ هویت و پروفایل ༻
 
-/profile — نمایش پروفایل ثبت‌شده
+/profile، رول، پروفایل — نمایش پروفایل ثبت‌شده
 
 اطلاعاتی مانند نقش، شغل، سطح و وضعیت
 مالی بر اساس داده‌های ثبت‌شده نمایش
@@ -1288,7 +1293,7 @@ bot.command("testxp", async (ctx) => {
    // =========================
   // SET LEVEL
   // =========================
-  
+
 
     bot.command("setlevel", async (ctx) => {
     syncOwner(ctx.from.id)
@@ -2147,7 +2152,7 @@ bot.command("testxp", async (ctx) => {
       )
     }
   )
-  
+
   // =========================
   // CALLBACK: MONEY
   // =========================
