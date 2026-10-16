@@ -12,6 +12,19 @@ db.exec(`
   )
 `)
 
+
+const characterRegistrationColumns = new Set(
+  db.prepare("PRAGMA table_info(character_registrations)")
+    .all()
+    .map(column => column.name)
+);
+
+for (const column of ["family_name", "mother_username", "father_username"]) {
+  if (!characterRegistrationColumns.has(column)) {
+    db.exec(`ALTER TABLE character_registrations ADD COLUMN ${column} TEXT`);
+  }
+}
+
 function normalizeLabel(value) {
   return String(value ?? "")
     .normalize("NFKC")

@@ -530,7 +530,8 @@ export function registerCommands(bot) {
 
   const registration = db.prepare(`
     SELECT character_name, registration_code, celebrity_name,
-           telegram_username, photo_file_id
+           telegram_username, photo_file_id,
+           family_name, mother_username, father_username
     FROM character_registrations
     WHERE telegram_username = ? COLLATE NOCASE
   `).get((ctx.from.username || user.username || "").replace(/^@/, ""))
@@ -541,6 +542,9 @@ export function registerCommands(bot) {
         `🔢 کد اختصاصی: ${registration.registration_code}`,
         `👤 نام واقعی سلبریتی: ${registration.celebrity_name}`,
         `🔰 نام کاربری ثبت‌شده: @${registration.telegram_username}`,
+        `🏰 خاندان: ${registration.family_name || "ثبت نشده"}`,
+        `👩 مادر: ${registration.mother_username ? "@" + registration.mother_username : "ثبت نشده"}`,
+        `👨 پدر: ${registration.father_username ? "@" + registration.father_username : "ثبت نشده"}`,
         `🆔 شناسه تلگرام: ${user.telegram_id}`,
       ].join("\n")
     : "🎭 شناسنامه‌ای برای این نام کاربری در کانال ثبت نشده است."
@@ -562,6 +566,382 @@ export function registerCommands(bot) {
 
 
   // =========================
+
+  // ===== مدیریت والدین و خاندان شناسنامه =====
+
+  const pendingRegistrationParents = new Map();
+
+  const registrationActor = (ctx) => {
+    if (ctx.from?.id) syncOwner(ctx.from.id);
+    return ctx.from?.id ? getUser(ctx.from.id) : null;
+  };
+
+  const registrationCanManage = (user) =>
+    Boolean(user && ["owner", "moderator"].includes(user.role));
+
+  const registrationUsername = (value) => {
+    const match = String(value ?? "").trim()
+      .match(/^@?([A-Za-z][A-Za-z0-9_]{4,31})$/);
+    return match ? match[1] : null;
+  };
+
+  const registrationClans = {
+    velmora: "ولمورا",
+    blackwell: "بلک ول",
+    bonds: "باندز"
+  };
+
+  async function openRegistrationParents(ctx, rawTarget) {
+    const actor = registrationActor(ctx);
+
+    if (!registrationCanManage(actor)) {
+      await ctx.reply("⛔ این دستور فقط برای مالک و ناظران است.");
+      return;
+    }
+
+    const target = registrationUsername(rawTarget);
+
+    if (!target) {
+      await ctx.reply("استفاده صحیح:\n/parents @username");
+      return;
+    }
+
+    const record = db.prepare(`
+      SELECT telegram_username, mother_username, father_username
+      FROM character_registrations
+      WHERE telegram_username = ? COLLATE NOCASE
+    `).get(target);
+
+    if (!record) {
+      await ctx.reply("❌ برای این نام کاربری شناسنامه‌ای پیدا نشد.");
+      return;
+    }
+
+    await ctx.reply(
+      `👪 مدیریت والدین شناسنامه @${record.telegram_username}\n\n` +
+      `مادر فعلی: ${record.mother_username ? "@" + record.mother_username : "ثبت نشده"}\n` +
+      `پدر فعلی: ${record.father_username ? "@" + record.father_username : "ثبت نشده"}\n\n` +
+      "برای ثبت یا تغییر، یکی از گزینه‌ها را انتخاب کن:",
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            {
+              text: "👩 مادر",
+              callback_data: `regparent:mother:${record.telegram_username}`
+            },
+            {
+              text: "👨 پدر",
+              callback_data: `regparent:father:${record.telegram_username}`
+            }
+          ]]
+        }
+      }
+    );
+  }
+
+  bot.command("parents", async ctx => {
+    await openRegistrationParents(ctx, ctx.match);
+  });
+
+  bot.hears(
+    /^(?:\/)?والدین\s+@?([A-Za-z][A-Za-z0-9_]{4,31})$/u,
+    async ctx => openRegistrationParents(ctx, ctx.match[1])
+  );
+
+  bot.callbackQuery(
+    /^regparent:(mother|father):([A-Za-z][A-Za-z0-9_]{4,31})$/,
+    async ctx => {
+      const actor = registrationActor(ctx);
+
+      if (!registrationCanManage(actor)) {
+        await ctx.answerCallbackQuery({
+          text: "فقط مالک و ناظران دسترسی دارند.",
+          show_alert: true
+        });
+        return;
+      }
+
+      const [, relation, target] = ctx.match;
+
+      const record = db.prepare(`
+        SELECT telegram_username
+        FROM character_registrations
+        WHERE telegram_username = ? COLLATE NOCASE
+      `).get(target);
+
+      if (!record) {
+        await ctx.answerCallbackQuery({
+          text: "شناسنامه پیدا نشد.",
+          show_alert: true
+        });
+        return;
+      }
+
+      pendingRegistrationParents.set(ctx.from.id, {
+        target: record.telegram_username,
+        relation,
+        expiresAt: Date.now() + 5 * 60 * 1000
+      });
+
+      await ctx.answerCallbackQuery();
+
+      await ctx.reply(
+        `یوزرنیم ${relation === "mother" ? "مادر" : "پدر"} ` +
+        `شخصیت @${record.telegram_username} را بفرست.\n\n` +
+        "فقط نام کاربری تلگرام را بفرست؛ برای مثال: @ExampleUser\n" +
+        "آیدی عددی پذیرفته نمی‌شود.\n" +
+        "برای حذف والد ثبت‌شده، «حذف» را بفرست.\n" +
+        "برای لغو عملیات: /cancel"
+      );
+    }
+  );
+
+  bot.command("cancel", async ctx => {
+    if (pendingRegistrationParents.delete(ctx.from.id)) {
+      await ctx.reply("عملیات ثبت والد لغو شد.");
+    }
+  });
+
+  bot.on("message:text", async (ctx, next) => {
+    const pending = pendingRegistrationParents.get(ctx.from.id);
+
+    if (!pending) {
+      return next();
+    }
+
+    if (Date.now() > pending.expiresAt) {
+      pendingRegistrationParents.delete(ctx.from.id);
+      await ctx.reply("زمان عملیات تمام شده است؛ دوباره دستور /parents را اجرا کن.");
+      return;
+    }
+
+    const text = String(ctx.message.text || "").trim();
+
+    if (text === "/cancel") {
+      pendingRegistrationParents.delete(ctx.from.id);
+      await ctx.reply("عملیات ثبت والد لغو شد.");
+      return;
+    }
+
+    // فرمان‌های دیگر باید به handlerهای خودشان برسند.
+    if (text.startsWith("/")) {
+      return next();
+    }
+
+    const actor = registrationActor(ctx);
+
+    if (!registrationCanManage(actor)) {
+      pendingRegistrationParents.delete(ctx.from.id);
+      await ctx.reply("⛔ دسترسی ثبت والد برای حساب شما وجود ندارد.");
+      return;
+    }
+
+    let username = null;
+
+    if (!/^(?:حذف|پاک)$/u.test(text)) {
+      username = registrationUsername(text);
+
+      if (!username) {
+        await ctx.reply(
+          "❌ نام کاربری معتبر نیست.\n" +
+          "فقط یوزرنیم تلگرام را بفرست، نه آیدی عددی."
+        );
+        return;
+      }
+    }
+
+    const column = pending.relation === "mother"
+      ? "mother_username"
+      : "father_username";
+
+    const result = db.prepare(`
+      UPDATE character_registrations
+      SET ${column} = ?
+      WHERE telegram_username = ? COLLATE NOCASE
+    `).run(username, pending.target);
+
+    pendingRegistrationParents.delete(ctx.from.id);
+
+    if (!result.changes) {
+      await ctx.reply("❌ شناسنامه پیدا نشد؛ والد ثبت نشد.");
+      return;
+    }
+
+    await ctx.reply(
+      username
+        ? `✅ ${pending.relation === "mother" ? "مادر" : "پدر"} @${username} ` +
+          `برای شناسنامه @${pending.target} ثبت شد.`
+        : `✅ اطلاعات ${pending.relation === "mother" ? "مادر" : "پدر"} ` +
+          `شناسنامه @${pending.target} حذف شد.`
+    );
+  });
+
+  async function showRegistrationFamilyMenu(ctx, rawTarget, editMode = false) {
+    const actor = registrationActor(ctx);
+
+    if (!registrationCanManage(actor)) {
+      await ctx.reply("⛔ این دستور فقط برای مالک و ناظران است.");
+      return;
+    }
+
+    const target = registrationUsername(rawTarget);
+
+    if (!target) {
+      await ctx.reply("استفاده صحیح:\n/family @username");
+      return;
+    }
+
+    const record = db.prepare(`
+      SELECT telegram_username, family_name
+      FROM character_registrations
+      WHERE telegram_username = ? COLLATE NOCASE
+    `).get(target);
+
+    if (!record) {
+      await ctx.reply("❌ برای این نام کاربری شناسنامه‌ای پیدا نشد.");
+      return;
+    }
+
+    if (editMode && actor.role !== "owner") {
+      await ctx.reply("⛔ ویرایش خاندان فقط در اختیار مالک است.");
+      return;
+    }
+
+    if (record.family_name && !editMode) {
+      if (actor.role !== "owner") {
+        await ctx.reply(
+          `خاندان این شخصیت قبلاً «${record.family_name}» ثبت شده است.\n` +
+          "تغییر خاندان فقط در اختیار مالک است."
+        );
+        return;
+      }
+
+      await ctx.reply(
+        `🏰 خاندان فعلی @${record.telegram_username}: ${record.family_name}`,
+        {
+          reply_markup: {
+            inline_keyboard: [[{
+              text: "✏️ ویرایش خاندان",
+              callback_data: `regfam_edit:${record.telegram_username}`
+            }]]
+          }
+        }
+      );
+      return;
+    }
+
+    const buttons = Object.entries(registrationClans).map(([key, name]) => ({
+      text: name,
+      callback_data: `regfam:${key}:${record.telegram_username}`
+    }));
+
+    await ctx.reply(
+      `${editMode ? "✏️ ویرایش خاندان" : "🏰 انتخاب خاندان"} برای ` +
+      `@${record.telegram_username}:\n\n` +
+      (record.family_name ? `خاندان فعلی: ${record.family_name}\n` : "") +
+      "یکی از سه خاندان را انتخاب کن:",
+      {
+        reply_markup: {
+          inline_keyboard: [buttons]
+        }
+      }
+    );
+  }
+
+  bot.command("family", async ctx => {
+    await showRegistrationFamilyMenu(ctx, ctx.match);
+  });
+
+  bot.hears(
+    /^(?:\/)?خاندان\s+@?([A-Za-z][A-Za-z0-9_]{4,31})$/u,
+    async ctx => showRegistrationFamilyMenu(ctx, ctx.match[1])
+  );
+
+  bot.command("editfamily", async ctx => {
+    const actor = registrationActor(ctx);
+
+    if (actor?.role !== "owner") {
+      await ctx.reply("⛔ ویرایش خاندان فقط برای مالک فعال است.");
+      return;
+    }
+
+    await showRegistrationFamilyMenu(ctx, ctx.match, true);
+  });
+
+  bot.callbackQuery(
+    /^regfam_edit:([A-Za-z][A-Za-z0-9_]{4,31})$/,
+    async ctx => {
+      const actor = registrationActor(ctx);
+
+      if (actor?.role !== "owner") {
+        await ctx.answerCallbackQuery({
+          text: "ویرایش خاندان فقط برای مالک فعال است.",
+          show_alert: true
+        });
+        return;
+      }
+
+      const target = ctx.match[1];
+      await ctx.answerCallbackQuery();
+      await showRegistrationFamilyMenu(ctx, target, true);
+    }
+  );
+
+  bot.callbackQuery(
+    /^regfam:(velmora|blackwell|bonds):([A-Za-z][A-Za-z0-9_]{4,31})$/,
+    async ctx => {
+      const actor = registrationActor(ctx);
+
+      if (!registrationCanManage(actor)) {
+        await ctx.answerCallbackQuery({
+          text: "دسترسی ثبت خاندان ندارید.",
+          show_alert: true
+        });
+        return;
+      }
+
+      const [, clanKey, target] = ctx.match;
+
+      const record = db.prepare(`
+        SELECT telegram_username, family_name
+        FROM character_registrations
+        WHERE telegram_username = ? COLLATE NOCASE
+      `).get(target);
+
+      if (!record) {
+        await ctx.answerCallbackQuery({
+          text: "شناسنامه پیدا نشد.",
+          show_alert: true
+        });
+        return;
+      }
+
+      // ناظر فقط می‌تواند خاندان ثبت‌نشده را انتخاب کند.
+      if (record.family_name && actor.role !== "owner") {
+        await ctx.answerCallbackQuery({
+          text: "تغییر خاندان فقط در اختیار مالک است.",
+          show_alert: true
+        });
+        return;
+      }
+
+      const clanName = registrationClans[clanKey];
+
+      db.prepare(`
+        UPDATE character_registrations
+        SET family_name = ?
+        WHERE telegram_username = ? COLLATE NOCASE
+      `).run(clanName, record.telegram_username);
+
+      await ctx.answerCallbackQuery({ text: "خاندان ثبت شد." });
+
+      await ctx.reply(
+        `✅ خاندان @${record.telegram_username} به «${clanName}» ثبت شد.`
+      );
+    }
+  );
+
+
   // MONTADORIA GUIDE PANEL
   // =========================
 
