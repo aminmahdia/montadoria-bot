@@ -1180,7 +1180,138 @@ export function registerCommands(bot) {
   );
 
 
-  // MONTADORIA GUIDE PANEL
+  
+// MONTADORIA_PERSIAN_ECONOMY_V1
+{
+  const faNumber = (value) => {
+    const digits = {
+      "۰":"0","۱":"1","۲":"2","۳":"3","۴":"4",
+      "۵":"5","۶":"6","۷":"7","۸":"8","۹":"9",
+      "٠":"0","١":"1","٢":"2","٣":"3","٤":"4",
+      "٥":"5","٦":"6","٧":"7","٨":"8","٩":"9"
+    };
+    return String(value).replace(/[۰-۹٠-٩]/g, ch => digits[ch] ?? ch);
+  };
+
+  const amountFrom = (value) => {
+    const n = Number(faNumber(value));
+    return Number.isSafeInteger(n) && n > 0 ? n : null;
+  };
+
+  const economyUser = (id) => getUser(id);
+
+  bot.hears(/^(?:موجودی|موجودی من|بالانس)$/u, async (ctx) => {
+    try {
+      const u = economyUser(ctx.from.id);
+      if (!u) return ctx.reply("❌ اطلاعات حساب شما پیدا نشد.");
+      const money = Number(u.money || 0);
+      const bank = Number(u.bank || 0);
+      if (u.infinite_money) {
+        return ctx.reply(
+          `💳 موجودی حساب\n\n♾️ پول نقد: بی‌نهایت\n🏦 موجودی بانک: ${bank.toLocaleString("en-US")}`
+        );
+      }
+      return ctx.reply(
+        `💳 موجودی حساب\n\n💵 پول نقد: ${money.toLocaleString("en-US")}\n🏦 موجودی بانک: ${bank.toLocaleString("en-US")}`
+      );
+    } catch (e) {
+      console.error("Persian balance error:", e);
+      return ctx.reply("❌ هنگام خواندن موجودی خطایی رخ داد.");
+    }
+  });
+
+  bot.hears(/^(?:واریز|واریز به بانک)\s+([0-9۰-۹٠-٩]+)$/u, async (ctx) => {
+    const amount = amountFrom(ctx.match[1]);
+    if (!amount) return ctx.reply("❌ مبلغ معتبر وارد کن؛ مثال: واریز ۱۰۰");
+    try {
+      const u = economyUser(ctx.from.id);
+      if (!u) return ctx.reply("❌ حساب شما پیدا نشد.");
+      if (!u.infinite_money && Number(u.money || 0) < amount) {
+        return ctx.reply("❌ پول نقد کافی نداری.");
+      }
+
+      const run = db.transaction(() => {
+        if (!u.infinite_money) {
+          db.prepare("UPDATE users SET money = money - ? WHERE telegram_id = ?")
+            .run(amount, ctx.from.id);
+        }
+        db.prepare("UPDATE users SET bank = COALESCE(bank, 0) + ? WHERE telegram_id = ?")
+          .run(amount, ctx.from.id);
+      });
+      run();
+      return ctx.reply(`✅ مبلغ ${amount.toLocaleString("en-US")} به بانک واریز شد.`);
+    } catch (e) {
+      console.error("Persian deposit error:", e);
+      return ctx.reply("❌ واریز انجام نشد؛ ساختار حساب را باید اصلاح کرد.");
+    }
+  });
+
+  bot.hears(/^(?:برداشت|برداشت از بانک)\s+([0-9۰-۹٠-٩]+)$/u, async (ctx) => {
+    const amount = amountFrom(ctx.match[1]);
+    if (!amount) return ctx.reply("❌ مبلغ معتبر وارد کن؛ مثال: برداشت ۵۰");
+    try {
+      const u = economyUser(ctx.from.id);
+      if (!u) return ctx.reply("❌ حساب شما پیدا نشد.");
+      if (Number(u.bank || 0) < amount) {
+        return ctx.reply("❌ موجودی بانک کافی نیست.");
+      }
+
+      db.transaction(() => {
+        db.prepare("UPDATE users SET bank = bank - ? WHERE telegram_id = ?")
+          .run(amount, ctx.from.id);
+        db.prepare("UPDATE users SET money = COALESCE(money, 0) + ? WHERE telegram_id = ?")
+          .run(amount, ctx.from.id);
+      })();
+
+      return ctx.reply(`✅ مبلغ ${amount.toLocaleString("en-US")} از بانک برداشت شد.`);
+    } catch (e) {
+      console.error("Persian withdraw error:", e);
+      return ctx.reply("❌ برداشت انجام نشد؛ ساختار حساب را باید اصلاح کرد.");
+    }
+  });
+
+  bot.hears(/^(?:انتقال|انتقال پول)\s+@?([A-Za-z0-9_]{5,32})\s+([0-9۰-۹٠-٩]+)$/u, async (ctx) => {
+    const username = ctx.match[1].replace(/^@/, "").toLowerCase();
+    const amount = amountFrom(ctx.match[2]);
+    if (!amount) return ctx.reply("❌ مبلغ معتبر وارد کن؛ مثال: انتقال @username ۲۵");
+
+    try {
+      const sender = economyUser(ctx.from.id);
+      const recipient = db.prepare(
+        "SELECT telegram_id, username, money, bank, infinite_money FROM users WHERE LOWER(username) = ? LIMIT 1"
+      ).get(username);
+
+      if (!sender) return ctx.reply("❌ حساب فرستنده پیدا نشد.");
+      if (!recipient) return ctx.reply("❌ کاربر گیرنده در ربات ثبت نشده است.");
+      if (String(recipient.telegram_id) === String(ctx.from.id)) {
+        return ctx.reply("❌ نمی‌توانی به خودت پول انتقال بدهی.");
+      }
+      if (!sender.infinite_money && Number(sender.money || 0) < amount) {
+        return ctx.reply("❌ پول نقد کافی برای انتقال نداری.");
+      }
+
+      db.transaction(() => {
+        if (!sender.infinite_money) {
+          db.prepare("UPDATE users SET money = money - ? WHERE telegram_id = ?")
+            .run(amount, ctx.from.id);
+        }
+        db.prepare("UPDATE users SET bank = COALESCE(bank, 0) + ? WHERE telegram_id = ?")
+          .run(amount, recipient.telegram_id);
+      })();
+
+      return ctx.reply(
+        `✅ انتقال انجام شد.\n\n👤 گیرنده: @${recipient.username || username}\n💰 مبلغ: ${amount.toLocaleString("en-US")}\n🏦 مبلغ به بانک گیرنده اضافه شد.`
+      );
+    } catch (e) {
+      console.error("Persian transfer error:", e);
+      return ctx.reply("❌ انتقال انجام نشد؛ ساختار حساب را باید اصلاح کرد.");
+    }
+  });
+}
+// END MONTADORIA_PERSIAN_ECONOMY_V1
+
+
+// MONTADORIA GUIDE PANEL
   // =========================
 
   const guidePages = {
