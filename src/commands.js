@@ -942,6 +942,244 @@ export function registerCommands(bot) {
   );
 
 
+
+  // ===== MONTADORIA ECONOMY =====
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS economy_ledger (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sender_telegram_id INTEGER NOT NULL,
+      recipient_telegram_id INTEGER,
+      kind TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  const economyRecord = db.prepare(`
+    INSERT INTO economy_ledger
+      (sender_telegram_id, recipient_telegram_id, kind, amount, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+
+  const economyAmount = value => {
+    const n = Number(String(value ?? "").trim().replace(/,/g, ""));
+    return Number.isSafeInteger(n) && n > 0 ? n : null;
+  };
+
+  const economyUsername = value =>
+    String(value ?? "").trim().replace(/^@/, "");
+
+  async function economyBalance(ctx) {
+    syncOwner(ctx.from.id);
+    const user = getUser(ctx.from.id);
+    if (!user) {
+      await ctx.reply("ابتدا /start را بزنید.");
+      return;
+    }
+    await ctx.reply(
+      "💰 موجودی شما\n\n" +
+      `💵 پول نقد: ${user.infinite_money ? "♾️ نامحدود" : user.money}\n` +
+      `🏦 موجودی بانک: ${user.bank ?? 0}`
+    );
+  }
+
+  bot.command("balance", economyBalance);
+  bot.hears(/^موجودی$/u, economyBalance);
+
+  async function economyDeposit(ctx, rawAmount) {
+    syncOwner(ctx.from.id);
+    const user = getUser(ctx.from.id);
+    const amount = economyAmount(rawAmount);
+
+    if (!user) {
+      await ctx.reply("ابتدا /start را بزنید.");
+      return;
+    }
+    if (!amount) {
+      await ctx.reply("مبلغ معتبر وارد کن.\nاستفاده: /deposit 1000");
+      return;
+    }
+    if (!user.infinite_money && Number(user.money) < amount) {
+      await ctx.reply("❌ پول نقد کافی نداری.");
+      return;
+    }
+
+    const transaction = db.transaction(() => {
+      if (user.infinite_money) {
+        db.prepare(
+          "UPDATE users SET bank = COALESCE(bank, 0) + ? WHERE telegram_id = ?"
+        ).run(amount, ctx.from.id);
+      } else {
+        const result = db.prepare(`
+          UPDATE users
+          SET money = money - ?, bank = COALESCE(bank, 0) + ?
+          WHERE telegram_id = ? AND money >= ?
+        `).run(amount, amount, ctx.from.id, amount);
+        if (!result.changes) return false;
+      }
+
+      economyRecord.run(
+        ctx.from.id, null,
+        user.infinite_money ? "deposit_infinite_cash" : "deposit",
+        amount, new Date().toISOString()
+      );
+      return true;
+    });
+
+    if (!transaction()) {
+      await ctx.reply("❌ موجودی نقدی تغییر کرده یا کافی نیست.");
+      return;
+    }
+    await ctx.reply(`✅ مبلغ ${amount} به بانک واریز شد.`);
+  }
+
+  bot.command("deposit", async ctx =>
+    economyDeposit(ctx, ctx.match)
+  );
+  bot.hears(/^واریز\s+([\d,]+)$/u, async ctx =>
+    economyDeposit(ctx, ctx.match[1])
+  );
+
+  async function economyWithdraw(ctx, rawAmount) {
+    syncOwner(ctx.from.id);
+    const user = getUser(ctx.from.id);
+    const amount = economyAmount(rawAmount);
+
+    if (!user) {
+      await ctx.reply("ابتدا /start را بزنید.");
+      return;
+    }
+    if (!amount) {
+      await ctx.reply("مبلغ معتبر وارد کن.\nاستفاده: /withdraw 1000");
+      return;
+    }
+
+    const transaction = db.transaction(() => {
+      const result = db.prepare(`
+        UPDATE users
+        SET bank = bank - ?, money = COALESCE(money, 0) + ?
+        WHERE telegram_id = ? AND COALESCE(bank, 0) >= ?
+      `).run(amount, amount, ctx.from.id, amount);
+
+      if (!result.changes) return false;
+
+      economyRecord.run(
+        ctx.from.id, null, "withdraw",
+        amount, new Date().toISOString()
+      );
+      return true;
+    });
+
+    if (!transaction()) {
+      await ctx.reply("❌ موجودی بانک کافی نیست.");
+      return;
+    }
+    await ctx.reply(`✅ مبلغ ${amount} از بانک برداشت شد.`);
+  }
+
+  bot.command("withdraw", async ctx =>
+    economyWithdraw(ctx, ctx.match)
+  );
+  bot.hears(/^برداشت\s+([\d,]+)$/u, async ctx =>
+    economyWithdraw(ctx, ctx.match[1])
+  );
+
+  async function economyTransfer(ctx, rawUsername, rawAmount) {
+    syncOwner(ctx.from.id);
+    const sender = getUser(ctx.from.id);
+    const username = economyUsername(rawUsername);
+    const amount = economyAmount(rawAmount);
+
+    if (!sender) {
+      await ctx.reply("ابتدا /start را بزنید.");
+      return;
+    }
+    if (!/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username) || !amount) {
+      await ctx.reply(
+        "❌ اطلاعات معتبر نیست.\nاستفاده:\n/transfer @username 1000"
+      );
+      return;
+    }
+
+    const transaction = db.transaction(() => {
+      const currentSender = db.prepare(
+        "SELECT telegram_id, money, infinite_money FROM users WHERE telegram_id = ?"
+      ).get(ctx.from.id);
+
+      const recipient = db.prepare(`
+        SELECT telegram_id, username
+        FROM users
+        WHERE username = ? COLLATE NOCASE
+      `).get(username);
+
+      if (!currentSender) return "sender";
+      if (!recipient) return "recipient";
+      if (Number(recipient.telegram_id) === Number(ctx.from.id)) return "self";
+
+      if (!currentSender.infinite_money) {
+        const debit = db.prepare(`
+          UPDATE users SET money = money - ?
+          WHERE telegram_id = ? AND money >= ?
+        `).run(amount, ctx.from.id, amount);
+        if (!debit.changes) return "cash";
+      }
+
+      db.prepare(`
+        UPDATE users
+        SET bank = COALESCE(bank, 0) + ?
+        WHERE telegram_id = ?
+      `).run(amount, recipient.telegram_id);
+
+      economyRecord.run(
+        ctx.from.id, recipient.telegram_id,
+        currentSender.infinite_money ? "transfer_infinite_cash_to_bank" : "transfer_to_bank",
+        amount, new Date().toISOString()
+      );
+
+      return recipient.username || username;
+    });
+
+    const result = transaction();
+
+    const errors = {
+      sender: "❌ حساب فرستنده پیدا نشد.",
+      recipient: "❌ کاربر گیرنده پیدا نشد یا در ربات ثبت‌نام نکرده است.",
+      self: "❌ نمی‌توانی به خودت پول انتقال بدهی.",
+      cash: "❌ پول نقد کافی نداری."
+    };
+
+    if (errors[result]) {
+      await ctx.reply(errors[result]);
+      return;
+    }
+
+    await ctx.reply(
+      `✅ انتقال با موفقیت انجام شد.\n\n` +
+      `👤 گیرنده: @${result}\n` +
+      `💰 مبلغ: ${amount}\n` +
+      "🏦 مبلغ مستقیماً به بانک گیرنده اضافه شد."
+    );
+  }
+
+  bot.command("transfer", async ctx => {
+    const args = String(ctx.match ?? "").trim().split(/\s+/);
+    if (args.length !== 2) {
+      await ctx.reply("استفاده:\n/transfer @username 1000");
+      return;
+    }
+    await economyTransfer(ctx, args[0], args[1]);
+  });
+
+  bot.hears(/^#انتقال\s+@?([A-Za-z][A-Za-z0-9_]{4,31})\s+([\d,]+)$/u,
+    async ctx => economyTransfer(ctx, ctx.match[1], ctx.match[2])
+  );
+
+  bot.hears(/^انتقال\s+@?([A-Za-z][A-Za-z0-9_]{4,31})\s+([\d,]+)$/u,
+    async ctx => economyTransfer(ctx, ctx.match[1], ctx.match[2])
+  );
+
+
   // MONTADORIA GUIDE PANEL
   // =========================
 
