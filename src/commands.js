@@ -1653,9 +1653,195 @@ export function registerCommands(bot) {
     }
   };
 
+
+  // MONTADORIA HIDDEN MARKETS V1
+
+  const hmCols = mm.prepare("PRAGMA table_info(shop_stores)").all().map(x => x.name);
+  for (const [col, definition] of [
+    ["hidden", "INTEGER NOT NULL DEFAULT 0"],
+    ["required_job", "TEXT NOT NULL DEFAULT ''"],
+    ["required_license", "TEXT NOT NULL DEFAULT ''"]
+  ]) {
+    if (!hmCols.includes(col)) {
+      mm.exec(`ALTER TABLE shop_stores ADD COLUMN ${col} ${definition}`);
+    }
+  }
+
+  const hmText = x => String(x ?? "").trim();
+
+  const hmCanEnter = (ctx, store) => {
+    if (!store || !store.active) return false;
+    if (!Number(store.hidden)) return true;
+    if (mmManage(ctx)) return true;
+
+    const job = hmText(store.required_job);
+    const license = hmText(store.required_license);
+
+    // فروشگاه مخفیِ بدون دسترسی تعریف‌شده، برای بازیکنان بسته است.
+    if (!job && !license) return false;
+
+    const user = getUser(ctx.from.id);
+    if (!user) return false;
+
+    if (job && hmText(user.job) !== job) return false;
+
+    if (license) {
+      try {
+        const granted = mm.prepare(`
+          SELECT 1 FROM black_market_user_licenses
+          WHERE telegram_id=? AND license_code=? AND active=1
+        `).get(String(ctx.from.id), license);
+
+        const type = mm.prepare(`
+          SELECT 1 FROM black_market_license_types
+          WHERE code=? AND active=1
+        `).get(license);
+
+        if (!granted || !type) return false;
+      } catch {
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  // ساخت فروشگاه مخفی در بازار سیاه
+  bot.hears(/^افزودن فروشگاه مخفی\s*\|\s*بازار سیاه\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
+    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+
+    const name = hmText(ctx.match[1]);
+    const category = hmText(ctx.match[2]);
+    const description = hmText(ctx.match[3]);
+
+    if (mm.prepare("SELECT 1 FROM shop_stores WHERE market=? AND name=?")
+      .get("بازار سیاه", name)) {
+      return ctx.reply("فروشگاهی با این نام از قبل وجود دارد.");
+    }
+
+    try {
+      mmAddStore.run("بازار سیاه", name, category, description, mmNow());
+      mm.prepare(`
+        UPDATE shop_stores SET hidden=1, required_job='', required_license=''
+        WHERE market=? AND name=?
+      `).run("بازار سیاه", name);
+
+      return ctx.reply(
+        `✅ فروشگاه مخفی «${name}» ساخته شد.\n` +
+        "در حال حاضر برای بازیکنان بسته است.\n" +
+        "برای تعیین دسترسی از دستور «تنظیم دسترسی فروشگاه» استفاده کن."
+      );
+    } catch {
+      return ctx.reply("ساخت فروشگاه ناموفق بود.");
+    }
+  });
+
+  // تعیین شغل و مجوز موردنیاز؛ برای هرکدام «-» یعنی بدون این شرط
+  bot.hears(/^تنظیم دسترسی فروشگاه\s*\|\s*بازار سیاه\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
+    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+
+    const name = hmText(ctx.match[1]);
+    const rawJob = hmText(ctx.match[2]);
+    const rawLicense = hmText(ctx.match[3]);
+    const job = rawJob === "-" ? "" : rawJob;
+    const license = rawLicense === "-" ? "" : rawLicense;
+
+    if (!job && !license) {
+      return ctx.reply("باید حداقل یک شرط دسترسی، یعنی شغل یا مجوز، تعیین کنی.");
+    }
+
+    const store = mmFindStore("بازار سیاه", name);
+    if (!store || !Number(store.hidden)) {
+      return ctx.reply("فروشگاه مخفی فعالی با این نام پیدا نشد.");
+    }
+
+    if (license) {
+      let type;
+      try {
+        type = mm.prepare(`
+          SELECT 1 FROM black_market_license_types
+          WHERE code=? AND active=1
+        `).get(license);
+      } catch {
+        return ctx.reply("جدول مجوزها در دسترس نیست.");
+      }
+      if (!type) return ctx.reply("کد مجوز فعال پیدا نشد؛ ابتدا مجوز را تعریف کن.");
+    }
+
+    mm.prepare(`
+      UPDATE shop_stores
+      SET required_job=?, required_license=?
+      WHERE store_id=?
+    `).run(job, license, store.store_id);
+
+    return ctx.reply(
+      `✅ دسترسی فروشگاه «${name}» تنظیم شد.\n` +
+      `شغل لازم: ${job || "بدون محدودیت شغلی"}\n` +
+      `مجوز لازم: ${license || "بدون مجوز اختصاصی"}`
+    );
+  });
+
+  // هر بازیکن فقط فروشگاه‌هایی را می‌بیند که اجازه ورود به آن‌ها را دارد.
+  bot.hears(/^فروشگاه‌های مخفی$/u, async ctx => {
+    const stores = mm.prepare(`
+      SELECT * FROM shop_stores
+      WHERE market='بازار سیاه' AND active=1 AND hidden=1
+      ORDER BY name
+    `).all().filter(store => hmCanEnter(ctx, store));
+
+    if (!stores.length) {
+      return ctx.reply("هیچ فروشگاه مخفیِ قابل‌دسترسی برای شخصیت شما وجود ندارد.");
+    }
+
+    return ctx.reply(
+      "🔒 فروشگاه‌های مخفیِ قابل‌دسترسی\n\n" +
+      stores.map(store =>
+        `• ${store.name}\n${store.category}\n${store.description || ""}\n` +
+        `کالاها: کالاهای بازار سیاه | ${store.name}`
+      ).join("\n\n")
+    );
+  });
+
+  // جلوگیری از مشاهده کالاهای فروشگاه مخفی بدون دسترسی
+  bot.hears(/^کالاهای\s+بازار سیاه\s*\|\s*(.+)$/u, async (ctx, next) => {
+    const name = hmText(ctx.match[1]);
+    const store = mmFindStore("بازار سیاه", name);
+    if (!store) return next();
+
+    if (!hmCanEnter(ctx, store)) {
+      return ctx.reply("🔒 اجازه دسترسی به این فروشگاه را نداری.");
+    }
+    return next();
+  });
+
+  // بررسی دسترسی هنگام خرید
+  bot.hears(/^خرید\s*\|\s*بازار سیاه\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async (ctx, next) => {
+    const storeName = hmText(ctx.match[1]);
+    const store = mmFindStore("بازار سیاه", storeName);
+    if (!store) return next();
+
+    if (!hmCanEnter(ctx, store)) {
+      return ctx.reply("🔒 برای خرید از این فروشگاه مجوز دسترسی نداری.");
+    }
+    return next();
+  });
+
+  // بررسی دسترسی هنگام فروش کالا
+  bot.hears(/^فروش\s*\|\s*بازار سیاه\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async (ctx, next) => {
+    const store = mmFindStore("بازار سیاه", hmText(ctx.match[1]));
+    if (!store) return next();
+
+    if (!hmCanEnter(ctx, store)) {
+      return ctx.reply("🔒 برای معامله در این فروشگاه دسترسی نداری.");
+    }
+    return next();
+  });
+
+  // END MONTADORIA HIDDEN MARKETS V1
+
   const mmStores = market => mm.prepare(`
     SELECT * FROM shop_stores
-    WHERE market=? AND active=1 ORDER BY name
+    WHERE market=? AND active=1 AND hidden=0 ORDER BY name
   `).all(market);
 
   bot.hears(/^بازارها$/u, async ctx => {
