@@ -1323,7 +1323,8 @@ export function registerCommands(bot) {
 
 
 
-// MONTADORIA_SHOP_V1
+
+// MONTADORIA_SHOP_V2
 {
   db.exec(`
     CREATE TABLE IF NOT EXISTS player_inventory (
@@ -1331,100 +1332,249 @@ export function registerCommands(bot) {
       item_code TEXT NOT NULL,
       quantity INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (telegram_id, item_code)
-    )
+    );
+
+    CREATE TABLE IF NOT EXISTS shop_catalog (
+      item_code TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      buy_price INTEGER NOT NULL,
+      sell_price INTEGER NOT NULL,
+      description TEXT DEFAULT '',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL
+    );
   `);
 
-  const shopItems = [
-    { code: "water", name: "آب آشامیدنی", price: 10 },
-    { code: "food_basic", name: "غذای ساده", price: 30 },
-    { code: "food_full", name: "غذای کامل", price: 70 },
-    { code: "medicine", name: "دارو", price: 120 },
-    { code: "clothes", name: "لباس معمولی", price: 200 },
-    { code: "flashlight", name: "چراغ‌قوه", price: 90 },
-    { code: "bag", name: "کیف دستی", price: 160 },
-    { code: "tools", name: "ابزار ساده", price: 250 }
+  const shopDefaults = [
+    ["water", "آب آشامیدنی", 10, 5, "آب آشامیدنی"],
+    ["food_basic", "غذای ساده", 30, 15, "یک وعده غذای ساده"],
+    ["food_full", "غذای کامل", 70, 35, "یک وعده غذای کامل"],
+    ["medicine", "دارو", 120, 60, "داروی عمومی"],
+    ["clothes", "لباس معمولی", 200, 100, "لباس معمولی"],
+    ["flashlight", "چراغ‌قوه", 90, 45, "چراغ‌قوه"],
+    ["bag", "کیف دستی", 160, 80, "کیف دستی"],
+    ["tools", "ابزار ساده", 250, 125, "ابزار عمومی"]
   ];
 
-  const normalizeShopDigits = value => String(value).replace(/[۰-۹٠-٩]/g, c => ({
-    "۰":"0","۱":"1","۲":"2","۳":"3","۴":"4",
-    "۵":"5","۶":"6","۷":"7","۸":"8","۹":"9",
-    "٠":"0","١":"1","٢":"2","٣":"3","٤":"4",
-    "٥":"5","٦":"6","٧":"7","٨":"8","٩":"9"
-  })[c]);
+  const shopDigits = value => String(value)
+    .replace(/[۰-۹٠-٩]/g, c => ({
+      "۰":"0","۱":"1","۲":"2","۳":"3","۴":"4",
+      "۵":"5","۶":"6","۷":"7","۸":"8","۹":"9",
+      "٠":"0","١":"1","٢":"2","٣":"3","٤":"4",
+      "٥":"5","٦":"6","٧":"7","٨":"8","٩":"9"
+    })[c])
+    .replace(/[٬,]/g, "");
 
-  const findShopItem = name => {
-    const n = name.trim().toLocaleLowerCase("fa-IR");
-    return shopItems.find(item =>
-      item.name.toLocaleLowerCase("fa-IR") === n ||
-      item.code.toLowerCase() === n
+  const shopNormalize = value => String(value)
+    .trim()
+    .toLocaleLowerCase("fa-IR")
+    .replace(/ي/g, "ی")
+    .replace(/ك/g, "ک");
+
+  const shopAmount = value => {
+    const n = Number(shopDigits(value));
+    return Number.isSafeInteger(n) && n >= 0 ? n : null;
+  };
+
+  const shopFind = (name, includeInactive = false) => {
+    const rows = db.prepare(
+      `SELECT * FROM shop_catalog ${includeInactive ? "" : "WHERE active = 1"}`
+    ).all();
+
+    return rows.find(row => shopNormalize(row.name) === shopNormalize(name));
+  };
+
+  // ثبت کالاهای پیش‌فرض، بدون حذف اطلاعات قبلی
+  const seedShop = db.prepare(`
+    INSERT OR IGNORE INTO shop_catalog
+      (item_code, name, buy_price, sell_price, description, active, created_at)
+    VALUES (?, ?, ?, ?, ?, 1, ?)
+  `);
+
+  for (const item of shopDefaults) {
+    seedShop.run(...item, Date.now());
+  }
+
+  const shopCanManage = ctx => {
+    const staff = getUser(ctx.from.id);
+    const role = String(staff?.role || "").toLowerCase();
+
+    return (
+      String(process.env.OWNER_ID || "") === String(ctx.from.id) ||
+      role === "owner" ||
+      role === "moderator"
     );
   };
 
-  const parseShopRequest = input => {
-    const value = normalizeShopDigits(input).trim();
-    const match = value.match(/^(.*?)\s+([0-9]+)$/u);
-    const name = match ? match[1].trim() : value;
-    const quantity = match ? Number(match[2]) : 1;
-    if (!name || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 100000)
-      return null;
-    return { item: findShopItem(name), quantity };
-  };
-
-  const inventoryGet = db.prepare(
-    "SELECT item_code, quantity FROM player_inventory WHERE telegram_id = ? AND quantity > 0"
-  );
-
+  // نمایش فهرست فروشگاه
   bot.hears(/^فروشگاه$/u, async ctx => {
-    const lines = shopItems.map((item, i) =>
-      `${i + 1}. ${item.name} — ${item.price.toLocaleString("en-US")} واحد\n   شناسه: ${item.code}`
+    const items = db.prepare(
+      "SELECT name, buy_price, sell_price, description FROM shop_catalog WHERE active = 1 ORDER BY name"
+    ).all();
+
+    if (!items.length) {
+      return ctx.reply("🛒 در حال حاضر کالایی در فروشگاه وجود ندارد.");
+    }
+
+    const list = items.map((item, i) =>
+      `${i + 1}. ${item.name}\n` +
+      `   💰 قیمت خرید: ${item.buy_price.toLocaleString("en-US")}\n` +
+      `   💵 قیمت فروش: ${item.sell_price.toLocaleString("en-US")}` +
+      (item.description ? `\n   📝 ${item.description}` : "")
     );
+
     return ctx.reply(
-      `༺ فروشگاه مونتادوریا ༻\n\n${lines.join("\n\n")}\n\n` +
-      `🛒 خرید: خرید نام کالا تعداد\n` +
-      `مثال: خرید غذای ساده ۲\n\n` +
-      `💰 فروش: فروش نام کالا تعداد\n` +
-      `مثال: فروش غذای ساده ۱\n\n` +
-      `🎒 برای دیدن وسایلت بنویس: کیف\n\n` +
-      `قیمت فروش کالاها نصف قیمت خریدشان است.`
+      `༺ فروشگاه مونتادوریا ༻\n\n${list.join("\n\n")}\n\n` +
+      `برای خرید: خرید نام کالا تعداد\n` +
+      `برای فروش: فروش نام کالا تعداد\n` +
+      `برای مشاهده وسایل: کیف`
     );
   });
 
-  bot.hears(/^(?:کیف|وسایلم|انبار)$/u, async ctx => {
+  // راهنمای مدیریت
+  bot.hears(/^مدیریت فروشگاه$/u, async ctx => {
+    if (!shopCanManage(ctx)) {
+      return ctx.reply("⛔ فقط مالک و ناظران اجازه مدیریت فروشگاه را دارند.");
+    }
+
+    return ctx.reply(
+      `༺ مدیریت فروشگاه مونتادوریا ༻\n\n` +
+      `➕ افزودن کالا:\n` +
+      `افزودن کالا | نام کالا | قیمت خرید | قیمت فروش | توضیحات\n\n` +
+      `مثال:\n` +
+      `افزودن کالا | شمشیر آهنی | ۱۰۰۰ | ۵۰۰ | شمشیر معمولی\n\n` +
+      `➖ حذف کالا از فهرست:\n` +
+      `حذف کالا | نام کالا\n\n` +
+      `📋 مشاهده فهرست کالاها:\n` +
+      `فروشگاه\n\n` +
+      `حذف کالا، وسایل قبلی کاربران را از کیفشان حذف نمی‌کند.`
+    );
+  });
+
+  // افزودن کالا
+  bot.hears(/^افزودن کالا\s*\|\s*([^|]+?)\s*\|\s*([\d۰-۹٠-٩٬,]+)\s*\|\s*([\d۰-۹٠-٩٬,]+)(?:\s*\|\s*(.*))?$/u, async ctx => {
+    if (!shopCanManage(ctx)) {
+      return ctx.reply("⛔ فقط مالک و ناظران اجازه افزودن کالا دارند.");
+    }
+
+    const name = ctx.match[1].trim();
+    const buyPrice = shopAmount(ctx.match[2]);
+    const sellPrice = shopAmount(ctx.match[3]);
+    const description = String(ctx.match[4] || "").trim();
+
+    if (
+      !name ||
+      name.length > 80 ||
+      buyPrice === null ||
+      buyPrice < 1 ||
+      sellPrice === null ||
+      sellPrice > buyPrice * 100
+    ) {
+      return ctx.reply(
+        "❌ اطلاعات کالا معتبر نیست.\n\n" +
+        "نمونه:\nافزودن کالا | شمشیر آهنی | ۱۰۰۰ | ۵۰۰ | شمشیر معمولی"
+      );
+    }
+
+    if (shopFind(name, true)) {
+      return ctx.reply("❌ کالایی با این نام از قبل ثبت شده است.");
+    }
+
+    const code = "custom_" + Date.now() + "_" +
+      Math.random().toString(36).slice(2, 8);
+
     try {
-      const rows = inventoryGet.all(String(ctx.from.id));
-      if (!rows.length) return ctx.reply("🎒 انبارت خالی است.");
-      const lines = rows.map(row => {
-        const item = shopItems.find(x => x.code === row.item_code);
-        return `• ${item ? item.name : row.item_code}: ${row.quantity} عدد`;
-      });
-      return ctx.reply(`🎒 وسایل و دارایی‌های قابل‌فروش تو:\n\n${lines.join("\n")}`);
+      db.prepare(`
+        INSERT INTO shop_catalog
+          (item_code, name, buy_price, sell_price, description, active, created_at)
+        VALUES (?, ?, ?, ?, ?, 1, ?)
+      `).run(code, name, buyPrice, sellPrice, description, Date.now());
+
+      return ctx.reply(
+        `✅ کالا به فروشگاه اضافه شد.\n\n` +
+        `📦 نام: ${name}\n` +
+        `💰 قیمت خرید: ${buyPrice.toLocaleString("en-US")}\n` +
+        `💵 قیمت فروش: ${sellPrice.toLocaleString("en-US")}`
+      );
     } catch (e) {
-      console.error("Inventory error:", e);
-      return ctx.reply("❌ هنگام مشاهده انبار خطایی رخ داد.");
+      console.error("Add shop item error:", e);
+      return ctx.reply("❌ ثبت کالا انجام نشد.");
     }
   });
 
-  bot.hears(/^خرید\s+(.+)$/u, async ctx => {
-    const request = parseShopRequest(ctx.match[1]);
-    if (!request) return ctx.reply("❌ تعداد معتبر نیست.");
-    const { item, quantity } = request;
-    if (!item) return ctx.reply("❌ این کالا در فروشگاه وجود ندارد. برای دیدن کالاها بنویس: فروشگاه");
+  // حذف کالا از فروشگاه؛ کیف کاربران حفظ می‌شود.
+  bot.hears(/^حذف کالا\s*\|\s*(.+)$/u, async ctx => {
+    if (!shopCanManage(ctx)) {
+      return ctx.reply("⛔ فقط مالک و ناظران اجازه حذف کالا دارند.");
+    }
 
-    const total = item.price * quantity;
-    if (!Number.isSafeInteger(total) || total <= 0)
-      return ctx.reply("❌ مبلغ خرید معتبر نیست.");
+    const name = ctx.match[1].trim();
+    const item = shopFind(name, false);
+
+    if (!item) {
+      return ctx.reply("❌ این کالا در فهرست فعال فروشگاه پیدا نشد.");
+    }
+
+    db.prepare("UPDATE shop_catalog SET active = 0 WHERE item_code = ?")
+      .run(item.item_code);
+
+    return ctx.reply(
+      `✅ کالا از فهرست فروشگاه خارج شد.\n\n` +
+      `📦 کالا: ${item.name}\n` +
+      `ℹ️ وسایل قبلی کاربران از کیفشان حذف نمی‌شود.`
+    );
+  });
+
+  // مشاهده کیف
+  bot.hears(/^(?:کیف|وسایلم|انبار)$/u, async ctx => {
+    const rows = db.prepare(`
+      SELECT i.item_code, i.quantity, c.name, c.active
+      FROM player_inventory i
+      LEFT JOIN shop_catalog c ON c.item_code = i.item_code
+      WHERE i.telegram_id = ? AND i.quantity > 0
+      ORDER BY c.name
+    `).all(String(ctx.from.id));
+
+    if (!rows.length) return ctx.reply("🎒 کیف تو خالی است.");
+
+    return ctx.reply(
+      "🎒 وسایل موجود در کیف:\n\n" +
+      rows.map(row =>
+        `• ${row.name || row.item_code}: ${row.quantity} عدد` +
+        (row.active === 0 ? " (خارج‌شده از فروشگاه)" : "")
+      ).join("\n")
+    );
+  });
+
+  // خرید
+  bot.hears(/^خرید\s+(.+?)\s+([\d۰-۹٠-٩٬,]+)$/u, async ctx => {
+    const name = ctx.match[1].trim();
+    const quantity = shopAmount(ctx.match[2]);
+    const item = shopFind(name);
+
+    if (!item) {
+      return ctx.reply("❌ این کالا در فروشگاه نیست. برای دیدن کالاها بنویس: فروشگاه");
+    }
+
+    if (!quantity || quantity < 1 || quantity > 100000) {
+      return ctx.reply("❌ تعداد معتبر نیست.");
+    }
+
+    const total = item.buy_price * quantity;
+    if (!Number.isSafeInteger(total)) {
+      return ctx.reply("❌ مبلغ بیش از حد مجاز است.");
+    }
 
     try {
       const user = getUser(ctx.from.id);
-      if (!user) return ctx.reply("❌ حساب کاربری تو در ربات پیدا نشد.");
-      if (!user.infinite_money && Number(user.money || 0) < total)
-        return ctx.reply(`❌ پول نقد کافی نداری.\nهزینه خرید: ${total.toLocaleString("en-US")}`);
+      if (!user) return ctx.reply("❌ حساب کاربری پیدا نشد.");
 
       db.transaction(() => {
         if (!user.infinite_money) {
           const result = db.prepare(
             "UPDATE users SET money = money - ? WHERE telegram_id = ? AND money >= ?"
           ).run(total, ctx.from.id, total);
+
           if (result.changes !== 1) throw new Error("INSUFFICIENT_FUNDS");
         }
 
@@ -1433,49 +1583,55 @@ export function registerCommands(bot) {
           VALUES (?, ?, ?)
           ON CONFLICT(telegram_id, item_code)
           DO UPDATE SET quantity = quantity + excluded.quantity
-        `).run(String(ctx.from.id), item.code, quantity);
+        `).run(String(ctx.from.id), item.item_code, quantity);
       })();
 
       return ctx.reply(
-        `✅ خرید با موفقیت انجام شد.\n\n` +
+        `✅ خرید انجام شد.\n\n` +
         `📦 کالا: ${item.name}\n` +
         `🔢 تعداد: ${quantity}\n` +
-        `💰 هزینه: ${total.toLocaleString("en-US")}\n` +
-        `🎒 کالا به انبارت اضافه شد.`
+        `💰 هزینه: ${total.toLocaleString("en-US")}`
       );
     } catch (e) {
       console.error("Shop purchase error:", e);
       return ctx.reply(
         String(e.message).includes("INSUFFICIENT_FUNDS")
           ? "❌ پول نقد کافی نداری."
-          : "❌ خرید انجام نشد؛ خطا در سیستم فروشگاه."
+          : "❌ خرید انجام نشد."
       );
     }
   });
 
-  bot.hears(/^فروش\s+(.+)$/u, async ctx => {
-    const request = parseShopRequest(ctx.match[1]);
-    if (!request) return ctx.reply("❌ تعداد معتبر نیست.");
-    const { item, quantity } = request;
-    if (!item) return ctx.reply("❌ این کالا قابل‌فروش نیست. نام کالا را در فروشگاه بررسی کن.");
+  // فروش کالاهای موجود در کیف
+  bot.hears(/^فروش\s+(.+?)\s+([\d۰-۹٠-٩٬,]+)$/u, async ctx => {
+    const name = ctx.match[1].trim();
+    const quantity = shopAmount(ctx.match[2]);
+    const item = shopFind(name, true);
 
-    const payout = Math.floor(item.price / 2) * quantity;
+    if (!item) return ctx.reply("❌ اطلاعات این کالا پیدا نشد.");
+
+    if (!quantity || quantity < 1 || quantity > 100000) {
+      return ctx.reply("❌ تعداد معتبر نیست.");
+    }
+
+    const payout = item.sell_price * quantity;
+    if (!Number.isSafeInteger(payout)) {
+      return ctx.reply("❌ مبلغ بیش از حد مجاز است.");
+    }
 
     try {
-      const user = getUser(ctx.from.id);
-      if (!user) return ctx.reply("❌ حساب کاربری تو در ربات پیدا نشد.");
-
       db.transaction(() => {
         const row = db.prepare(
           "SELECT quantity FROM player_inventory WHERE telegram_id = ? AND item_code = ?"
-        ).get(String(ctx.from.id), item.code);
+        ).get(String(ctx.from.id), item.item_code);
 
-        if (!row || Number(row.quantity) < quantity)
+        if (!row || row.quantity < quantity) {
           throw new Error("NOT_ENOUGH_ITEMS");
+        }
 
         db.prepare(
           "UPDATE player_inventory SET quantity = quantity - ? WHERE telegram_id = ? AND item_code = ?"
-        ).run(quantity, String(ctx.from.id), item.code);
+        ).run(quantity, String(ctx.from.id), item.item_code);
 
         db.prepare(
           "UPDATE users SET money = COALESCE(money, 0) + ? WHERE telegram_id = ?"
@@ -1483,23 +1639,23 @@ export function registerCommands(bot) {
       })();
 
       return ctx.reply(
-        `✅ فروش با موفقیت انجام شد.\n\n` +
+        `✅ فروش انجام شد.\n\n` +
         `📦 کالا: ${item.name}\n` +
-        `🔢 تعداد فروخته‌شده: ${quantity}\n` +
-        `💰 دریافتی: ${payout.toLocaleString("en-US")}\n` +
-        `💵 مبلغ به پول نقدت اضافه شد.`
+        `🔢 تعداد: ${quantity}\n` +
+        `💵 دریافتی: ${payout.toLocaleString("en-US")}`
       );
     } catch (e) {
       console.error("Shop sale error:", e);
       return ctx.reply(
         String(e.message).includes("NOT_ENOUGH_ITEMS")
-          ? "❌ این تعداد از کالا را در انبار نداری."
-          : "❌ فروش انجام نشد؛ خطا در سیستم فروشگاه."
+          ? "❌ این تعداد از کالا را در کیف نداری."
+          : "❌ فروش انجام نشد."
       );
     }
   });
 }
-// END MONTADORIA_SHOP_V1
+// END MONTADORIA_SHOP_V2
+
 
 
 // MONTADORIA GUIDE PANEL
