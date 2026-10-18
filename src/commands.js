@@ -1962,8 +1962,15 @@ export function registerCommands(bot) {
 
     const item = mmFindItem(ctx.match[1], mmText(ctx.match[2]), mmText(ctx.match[3]));
    
-  // MONTADORIA SHOP STOCK V1
 
+ if (!item) return ctx.reply("کالا پیدا نشد.");
+
+    mm.prepare("UPDATE shop_catalog SET active=0 WHERE item_code=?").run(item.item_code);
+    return ctx.reply("✅ کالا غیرفعال شد؛ موجودی کیف کاربران حذف نشد.");
+  });
+
+
+  // MONTADORIA SHOP STOCK V1
   bot.hears(/^تنظیم موجودی کالا\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(-1|[\d۰-۹٠-٩٬,]+)$/u, async ctx => {
     if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
 
@@ -1984,7 +1991,6 @@ export function registerCommands(bot) {
 
     return ctx.reply(
       `✅ موجودی «${itemName}» تنظیم شد.\n` +
-      `فروشگاه: ${storeName}\n` +
       `موجودی: ${stock === -1 ? "نامحدود" : mmCash(stock)}`
     );
   });
@@ -2010,14 +2016,7 @@ export function registerCommands(bot) {
       ).join("\n\n")
     );
   });
-
   // END MONTADORIA SHOP STOCK V1
-
- if (!item) return ctx.reply("کالا پیدا نشد.");
-
-    mm.prepare("UPDATE shop_catalog SET active=0 WHERE item_code=?").run(item.item_code);
-    return ctx.reply("✅ کالا غیرفعال شد؛ موجودی کیف کاربران حذف نشد.");
-  });
 
   bot.hears(/^خرید\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
     const [, market, rawStore, rawName, rawQty] = ctx.match;
@@ -2037,9 +2036,7 @@ export function registerCommands(bot) {
 
     const stock = Number(item.stock ?? -1);
     if (stock !== -1 && stock < qty) {
-      return ctx.reply(
-        `موجودی کافی نیست. موجودی فعلی: ${Math.max(0, stock)}`
-      );
+      return ctx.reply(`موجودی کافی نیست. موجودی فعلی: ${Math.max(0, stock)}`);
     }
 
     const cost = Number(item.buy_price) * qty;
@@ -2056,6 +2053,7 @@ export function registerCommands(bot) {
         `).run(qty, item.item_code, qty);
 
         if (!stockUpdate.changes) throw new Error("INSUFFICIENT_STOCK");
+
 
         if (!user.infinite_money) {
           const r = mm.prepare(`
