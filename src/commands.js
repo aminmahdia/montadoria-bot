@@ -1581,6 +1581,10 @@ export function registerCommands(bot) {
   if (!cols.includes("store_id")) {
     mm.exec("ALTER TABLE shop_catalog ADD COLUMN store_id INTEGER");
   }
+  const stockCols = mm.prepare("PRAGMA table_info(shop_catalog)").all().map(x => x.name);
+  if (!stockCols.includes("stock")) {
+    mm.exec("ALTER TABLE shop_catalog ADD COLUMN stock INTEGER NOT NULL DEFAULT -1");
+  }
 
   const seedStores = [
     ["بازار اصلی", "خواربارفروشی", "مواد غذایی", "خوراکی‌ها و اقلام روزمره"],
@@ -1957,7 +1961,59 @@ export function registerCommands(bot) {
     if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
 
     const item = mmFindItem(ctx.match[1], mmText(ctx.match[2]), mmText(ctx.match[3]));
-    if (!item) return ctx.reply("کالا پیدا نشد.");
+   
+  // MONTADORIA SHOP STOCK V1
+
+  bot.hears(/^تنظیم موجودی کالا\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(-1|[\d۰-۹٠-٩٬,]+)$/u, async ctx => {
+    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+
+    const market = ctx.match[1];
+    const storeName = mmText(ctx.match[2]);
+    const itemName = mmText(ctx.match[3]);
+    const stock = mmNum(ctx.match[4]);
+
+    if (!Number.isSafeInteger(stock) || stock < -1 || stock > 100000000) {
+      return ctx.reply("مقدار موجودی معتبر نیست.");
+    }
+
+    const item = mmFindItem(market, storeName, itemName);
+    if (!item || !item.store_active) return ctx.reply("کالا یا فروشگاه پیدا نشد.");
+
+    mm.prepare("UPDATE shop_catalog SET stock=? WHERE item_code=?")
+      .run(stock, item.item_code);
+
+    return ctx.reply(
+      `✅ موجودی «${itemName}» تنظیم شد.\n` +
+      `فروشگاه: ${storeName}\n` +
+      `موجودی: ${stock === -1 ? "نامحدود" : mmCash(stock)}`
+    );
+  });
+
+  bot.hears(/^موجودی فروشگاه\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*(.+)$/u, async ctx => {
+    const market = ctx.match[1];
+    const storeName = mmText(ctx.match[2]);
+    const store = mmFindStore(market, storeName);
+
+    if (!store) return ctx.reply("فروشگاه فعال پیدا نشد.");
+
+    const rows = mm.prepare(`
+      SELECT name, stock FROM shop_catalog
+      WHERE store_id=? AND active=1 ORDER BY name
+    `).all(store.store_id);
+
+    if (!rows.length) return ctx.reply("این فروشگاه کالای فعالی ندارد.");
+
+    return ctx.reply(
+      `📦 موجودی انبار: ${storeName}\n\n` +
+      rows.map(x =>
+        `• ${x.name}\nموجودی: ${Number(x.stock) === -1 ? "نامحدود" : mmCash(x.stock)}`
+      ).join("\n\n")
+    );
+  });
+
+  // END MONTADORIA SHOP STOCK V1
+
+ if (!item) return ctx.reply("کالا پیدا نشد.");
 
     mm.prepare("UPDATE shop_catalog SET active=0 WHERE item_code=?").run(item.item_code);
     return ctx.reply("✅ کالا غیرفعال شد؛ موجودی کیف کاربران حذف نشد.");
@@ -1979,6 +2035,13 @@ export function registerCommands(bot) {
     const user = getUser(ctx.from.id);
     if (!user) return ctx.reply("حساب شخصیت پیدا نشد؛ ابتدا ثبت‌نام کن.");
 
+    const stock = Number(item.stock ?? -1);
+    if (stock !== -1 && stock < qty) {
+      return ctx.reply(
+        `موجودی کافی نیست. موجودی فعلی: ${Math.max(0, stock)}`
+      );
+    }
+
     const cost = Number(item.buy_price) * qty;
     if (!user.infinite_money && Number(user.money || 0) < cost) {
       return ctx.reply(`پول نقد کافی نیست. هزینه خرید: ${mmCash(cost)}`);
@@ -1986,6 +2049,14 @@ export function registerCommands(bot) {
 
     try {
       mm.transaction(() => {
+        const stockUpdate = mm.prepare(`
+          UPDATE shop_catalog
+          SET stock=CASE WHEN stock=-1 THEN -1 ELSE stock-? END
+          WHERE item_code=? AND active=1 AND (stock=-1 OR stock>=?)
+        `).run(qty, item.item_code, qty);
+
+        if (!stockUpdate.changes) throw new Error("INSUFFICIENT_STOCK");
+
         if (!user.infinite_money) {
           const r = mm.prepare(`
             UPDATE users SET money=money-?
