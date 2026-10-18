@@ -1407,6 +1407,337 @@ export function registerCommands(bot) {
   };
 
   // نمایش فهرست فروشگاه
+
+// MONTADORIA MULTI-MARKET V3
+{
+  const mm = db;
+  const mmNow = () => Math.floor(Date.now() / 1000);
+  const mmText = x => String(x ?? "").trim();
+
+  const mmNum = x => {
+    const fa = "۰۱۲۳۴۵۶۷۸۹", ar = "٠١٢٣٤٥٦٧٨٩";
+    const n = [...String(x ?? "").trim()].map(c => {
+      let i = fa.indexOf(c);
+      if (i >= 0) return String(i);
+      i = ar.indexOf(c);
+      return i >= 0 ? String(i) : c;
+    }).join("").replace(/[,\s٬،]/g, "");
+    return Number(n);
+  };
+
+  const mmCash = x => Number(x || 0).toLocaleString("en-US");
+
+  mm.exec(`
+    CREATE TABLE IF NOT EXISTS shop_stores (
+      store_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      market TEXT NOT NULL,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      UNIQUE(market, name)
+    )
+  `);
+
+  const cols = mm.prepare("PRAGMA table_info(shop_catalog)").all().map(x => x.name);
+  if (!cols.includes("store_id")) {
+    mm.exec("ALTER TABLE shop_catalog ADD COLUMN store_id INTEGER");
+  }
+
+  const seedStores = [
+    ["بازار اصلی", "خواربارفروشی", "مواد غذایی", "خوراکی‌ها و اقلام روزمره"],
+    ["بازار اصلی", "پوشاک", "پوشاک", "لباس و لوازم پوشیدنی"],
+    ["بازار اصلی", "داروخانه", "سلامت", "دارو و اقلام درمانی بازی"],
+    ["بازار اصلی", "ابزارفروشی", "ابزار", "ابزار و لوازم کاربردی"],
+    ["بازار سیاه", "تجهیزات زیرزمینی", "تجهیزات", "تجهیزات ویژه دنیای نقش‌آفرینی"],
+    ["بازار سیاه", "کالاهای کمیاب", "کالاهای کمیاب", "اقلام نادر دنیای نقش‌آفرینی"]
+  ];
+
+  const mmAddStore = mm.prepare(`
+    INSERT OR IGNORE INTO shop_stores
+      (market, name, category, description, active, created_at)
+    VALUES (?, ?, ?, ?, 1, ?)
+  `);
+
+  mm.transaction(() => {
+    for (const x of seedStores) mmAddStore.run(...x, mmNow());
+
+    const map = {
+      water: "خواربارفروشی",
+      food_basic: "خواربارفروشی",
+      food_full: "خواربارفروشی",
+      medicine: "داروخانه",
+      clothes: "پوشاک",
+      flashlight: "ابزارفروشی",
+      tools: "ابزارفروشی",
+      bag: "پوشاک"
+    };
+
+    const findStore = mm.prepare(
+      "SELECT store_id FROM shop_stores WHERE market=? AND name=?"
+    );
+    const assign = mm.prepare(
+      "UPDATE shop_catalog SET store_id=? WHERE item_code=? AND store_id IS NULL"
+    );
+
+    for (const [code, name] of Object.entries(map)) {
+      const st = findStore.get("بازار اصلی", name);
+      if (st) assign.run(st.store_id, code);
+    }
+
+    const fallback = findStore.get("بازار اصلی", "خواربارفروشی");
+    if (fallback) {
+      mm.prepare("UPDATE shop_catalog SET store_id=? WHERE store_id IS NULL")
+        .run(fallback.store_id);
+    }
+  })();
+
+  const mmFindStore = (market, name) => mm.prepare(`
+    SELECT * FROM shop_stores
+    WHERE market=? AND name=? AND active=1
+  `).get(market, name);
+
+  const mmFindItem = (market, store, name) => mm.prepare(`
+    SELECT c.*, s.market, s.name AS store_name, s.active AS store_active
+    FROM shop_catalog c
+    JOIN shop_stores s ON s.store_id=c.store_id
+    WHERE s.market=? AND s.name=? AND c.name=?
+  `).get(market, store, name);
+
+  const mmManage = ctx => {
+    try {
+      const u = getUser(ctx.from.id);
+      return Boolean(
+        u && (u.role === "owner" || u.role === "moderator")
+      ) || String(process.env.OWNER_ID || "") === String(ctx.from.id);
+    } catch {
+      return String(process.env.OWNER_ID || "") === String(ctx.from.id);
+    }
+  };
+
+  const mmStores = market => mm.prepare(`
+    SELECT * FROM shop_stores
+    WHERE market=? AND active=1 ORDER BY name
+  `).all(market);
+
+  bot.hears(/^بازارها$/u, async ctx => {
+    return ctx.reply(
+      "🏛 بازارهای مونتادوریا\n\n" +
+      ["بازار اصلی", "بازار سیاه"].map(m =>
+        `${m}: ${mmStores(m).length} فروشگاه فعال`
+      ).join("\n") +
+      "\n\nفروشگاه‌های بازار اصلی\nفروشگاه‌های بازار سیاه"
+    );
+  });
+
+  for (const market of ["بازار اصلی", "بازار سیاه"]) {
+    bot.hears(new RegExp("^فروشگاه‌های " + market + "$"), async ctx => {
+      const stores = mmStores(market);
+      if (!stores.length) return ctx.reply("فروشگاه فعالی وجود ندارد.");
+      return ctx.reply(
+        `🏪 ${market}\n\n` +
+        stores.map(x =>
+          `• ${x.name}\n${x.category} — ${x.description}`
+        ).join("\n\n") +
+        `\n\nکالاهای ${market} | نام فروشگاه`
+      );
+    });
+  }
+
+  bot.hears(/^کالاهای\s+(بازار اصلی|بازار سیاه)\s*\|\s*(.+)$/u, async ctx => {
+    const market = ctx.match[1], storeName = mmText(ctx.match[2]);
+    if (!mmFindStore(market, storeName)) return ctx.reply("فروشگاه پیدا نشد.");
+
+    const rows = mm.prepare(`
+      SELECT c.* FROM shop_catalog c
+      JOIN shop_stores s ON s.store_id=c.store_id
+      WHERE s.market=? AND s.name=? AND s.active=1 AND c.active=1
+      ORDER BY c.name
+    `).all(market, storeName);
+
+    if (!rows.length) return ctx.reply("در این فروشگاه کالای فعالی وجود ندارد.");
+
+    return ctx.reply(
+      `🛒 ${market} | ${storeName}\n\n` +
+      rows.map(x =>
+        `• ${x.name}\nخرید: ${mmCash(x.buy_price)}\nفروش: ${mmCash(x.sell_price)}\n${x.description || ""}`
+      ).join("\n\n") +
+      `\n\nخرید | ${market} | ${storeName} | نام کالا | تعداد`
+    );
+  });
+
+  bot.hears(/^افزودن فروشگاه\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
+    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+
+    const [, market, rawName, rawCategory, rawDesc] = ctx.match;
+    const name = mmText(rawName), category = mmText(rawCategory), desc = mmText(rawDesc);
+
+    try {
+      mmAddStore.run(market, name, category, desc, mmNow());
+      return ctx.reply(`✅ فروشگاه «${name}» در ${market} ثبت شد.`);
+    } catch {
+      return ctx.reply("ثبت فروشگاه ناموفق بود؛ احتمالاً نام آن تکراری است.");
+    }
+  });
+
+  bot.hears(/^حذف فروشگاه\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*(.+)$/u, async ctx => {
+    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+
+    const result = mm.prepare(`
+      UPDATE shop_stores SET active=0
+      WHERE market=? AND name=? AND active=1
+    `).run(ctx.match[1], mmText(ctx.match[2]));
+
+    return ctx.reply(result.changes
+      ? "✅ فروشگاه غیرفعال شد؛ اطلاعات قبلی حفظ شده‌اند."
+      : "فروشگاه فعالی با این نام پیدا نشد.");
+  });
+
+  bot.hears(/^افزودن کالا\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
+    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+
+    const [, market, rawStore, rawName, rawBuy, rawSell, rawDesc] = ctx.match;
+    const storeName = mmText(rawStore), name = mmText(rawName);
+    const buy = mmNum(rawBuy), sell = mmNum(rawSell), desc = mmText(rawDesc);
+
+    if (!Number.isSafeInteger(buy) || buy <= 0 ||
+        !Number.isSafeInteger(sell) || sell < 0 || sell > buy * 100) {
+      return ctx.reply("قیمت‌ها معتبر نیستند.");
+    }
+
+    const store = mmFindStore(market, storeName);
+    if (!store) return ctx.reply("فروشگاه فعال پیدا نشد.");
+
+    const exists = mm.prepare(`
+      SELECT 1 FROM shop_catalog WHERE store_id=? AND name=? AND active=1
+    `).get(store.store_id, name);
+    if (exists) return ctx.reply("این کالا از قبل در این فروشگاه ثبت شده است.");
+
+    const code = "market_" + Date.now().toString(36) +
+      "_" + Math.random().toString(36).slice(2, 7);
+
+    try {
+      mm.prepare(`
+        INSERT INTO shop_catalog
+          (item_code, name, buy_price, sell_price, description, active, created_at, store_id)
+        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+      `).run(code, name, buy, sell, desc, mmNow(), store.store_id);
+
+      return ctx.reply(`✅ کالای «${name}» به فروشگاه «${storeName}» اضافه شد.`);
+    } catch {
+      return ctx.reply("ثبت کالا ناموفق بود.");
+    }
+  });
+
+  bot.hears(/^حذف کالا\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
+    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+
+    const item = mmFindItem(ctx.match[1], mmText(ctx.match[2]), mmText(ctx.match[3]));
+    if (!item) return ctx.reply("کالا پیدا نشد.");
+
+    mm.prepare("UPDATE shop_catalog SET active=0 WHERE item_code=?").run(item.item_code);
+    return ctx.reply("✅ کالا غیرفعال شد؛ موجودی کیف کاربران حذف نشد.");
+  });
+
+  bot.hears(/^خرید\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
+    const [, market, rawStore, rawName, rawQty] = ctx.match;
+    const storeName = mmText(rawStore), name = mmText(rawName), qty = mmNum(rawQty);
+
+    if (!Number.isSafeInteger(qty) || qty < 1 || qty > 10000) {
+      return ctx.reply("تعداد کالا معتبر نیست.");
+    }
+
+    const item = mmFindItem(market, storeName, name);
+    if (!item || !item.active || !item.store_active) {
+      return ctx.reply("کالای فعالی پیدا نشد.");
+    }
+
+    const user = getUser(ctx.from.id);
+    if (!user) return ctx.reply("حساب شخصیت پیدا نشد؛ ابتدا ثبت‌نام کن.");
+
+    const cost = Number(item.buy_price) * qty;
+    if (!user.infinite_money && Number(user.money || 0) < cost) {
+      return ctx.reply(`پول نقد کافی نیست. هزینه خرید: ${mmCash(cost)}`);
+    }
+
+    try {
+      mm.transaction(() => {
+        if (!user.infinite_money) {
+          const r = mm.prepare(`
+            UPDATE users SET money=money-?
+            WHERE telegram_id=? AND money>=?
+          `).run(cost, String(ctx.from.id), cost);
+          if (!r.changes) throw new Error("INSUFFICIENT_MONEY");
+        }
+
+        mm.prepare(`
+          INSERT INTO player_inventory (telegram_id, item_code, quantity)
+          VALUES (?, ?, ?)
+          ON CONFLICT(telegram_id, item_code)
+          DO UPDATE SET quantity=quantity+excluded.quantity
+        `).run(String(ctx.from.id), item.item_code, qty);
+      })();
+
+      return ctx.reply(
+        `✅ خرید انجام شد\nکالا: ${item.name}\nتعداد: ${qty}\nهزینه: ${mmCash(cost)}`
+      );
+    } catch {
+      return ctx.reply("خرید انجام نشد؛ ممکن است ساختار حساب کاربری متفاوت باشد.");
+    }
+  });
+
+  bot.hears(/^فروش\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
+    const [, market, rawStore, rawName, rawQty] = ctx.match;
+    const storeName = mmText(rawStore), name = mmText(rawName), qty = mmNum(rawQty);
+
+    if (!Number.isSafeInteger(qty) || qty < 1 || qty > 10000) {
+      return ctx.reply("تعداد کالا معتبر نیست.");
+    }
+
+    const item = mmFindItem(market, storeName, name);
+    if (!item) return ctx.reply("کالا در این فروشگاه پیدا نشد.");
+
+    const id = String(ctx.from.id);
+    const inv = mm.prepare(`
+      SELECT quantity FROM player_inventory WHERE telegram_id=? AND item_code=?
+    `).get(id, item.item_code);
+
+    if (!inv || Number(inv.quantity) < qty) {
+      return ctx.reply("موجودی این کالا در کیفت کافی نیست.");
+    }
+
+    const income = Number(item.sell_price) * qty;
+
+    try {
+      mm.transaction(() => {
+        const r = mm.prepare(`
+          UPDATE player_inventory SET quantity=quantity-?
+          WHERE telegram_id=? AND item_code=? AND quantity>=?
+        `).run(qty, id, item.item_code, qty);
+
+        if (!r.changes) throw new Error("INSUFFICIENT_ITEMS");
+
+        mm.prepare(`
+          DELETE FROM player_inventory
+          WHERE telegram_id=? AND item_code=? AND quantity<=0
+        `).run(id, item.item_code);
+
+        mm.prepare("UPDATE users SET money=money+? WHERE telegram_id=?")
+          .run(income, id);
+      })();
+
+      return ctx.reply(
+        `✅ فروش انجام شد\nکالا: ${item.name}\nتعداد: ${qty}\nدریافتی: ${mmCash(income)}`
+      );
+    } catch {
+      return ctx.reply("فروش انجام نشد؛ ساختار حساب یا کیف را بررسی کن.");
+    }
+  });
+}
+// END MONTADORIA MULTI-MARKET V3
+
+
   bot.hears(/^فروشگاه$/u, async ctx => {
     const items = db.prepare(
       "SELECT name, buy_price, sell_price, description FROM shop_catalog WHERE active = 1 ORDER BY name"
