@@ -1411,6 +1411,143 @@ export function registerCommands(bot) {
 // MONTADORIA MULTI-MARKET V3
 {
   const mm = db;
+
+  // MONTADORIA BLACK MARKET LICENSES V1
+  mm.exec(`
+    CREATE TABLE IF NOT EXISTS black_market_license_types (
+      code TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS black_market_user_licenses (
+      telegram_id TEXT NOT NULL,
+      license_code TEXT NOT NULL,
+      granted_by TEXT NOT NULL,
+      granted_at INTEGER NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (telegram_id, license_code)
+    );
+  `);
+
+  const bmCols = mm.prepare("PRAGMA table_info(shop_catalog)").all().map(x => x.name);
+  if (!bmCols.includes("required_license")) {
+    mm.exec("ALTER TABLE shop_catalog ADD COLUMN required_license TEXT NOT NULL DEFAULT ''");
+  }
+
+  bot.hears(/^تعریف مجوز\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
+    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+    const [, rawCode, rawName, rawDesc] = ctx.match;
+    const code = mmText(rawCode), name = mmText(rawName), desc = mmText(rawDesc);
+    if (!/^[\p{L}\p{N}_-]{2,40}$/u.test(code) || !name) {
+      return ctx.reply("کد مجوز معتبر نیست.");
+    }
+    try {
+      mm.prepare(`INSERT INTO black_market_license_types
+        (code,name,description,active,created_at) VALUES (?,?,?,1,?)`)
+        .run(code, name, desc, mmNow());
+      return ctx.reply(`✅ مجوز «${name}» ساخته شد.`);
+    } catch {
+      return ctx.reply("این کد مجوز قبلاً ثبت شده است.");
+    }
+  });
+
+  bot.hears(/^مجوزهای بازار سیاه$/u, async ctx => {
+    const rows = mm.prepare(`SELECT code,name,description
+      FROM black_market_license_types WHERE active=1 ORDER BY name`).all();
+    return ctx.reply(rows.length
+      ? "🔐 مجوزهای بازار سیاه\n\n" +
+        rows.map(x => `• ${x.name}\nکد: ${x.code}\n${x.description}`).join("\n\n")
+      : "هنوز مجوزی تعریف نشده است.");
+  });
+
+  bot.hears(/^مجوزهای من$/u, async ctx => {
+    const rows = mm.prepare(`SELECT t.code,t.name
+      FROM black_market_user_licenses u
+      JOIN black_market_license_types t ON t.code=u.license_code
+      WHERE u.telegram_id=? AND u.active=1 AND t.active=1
+      ORDER BY t.name`).all(String(ctx.from.id));
+    return ctx.reply(rows.length
+      ? "🔐 مجوزهای فعال شما:\n\n" + rows.map(x => `• ${x.name} (${x.code})`).join("\n")
+      : "شما مجوز فعال بازار سیاه ندارید.");
+  });
+
+  bot.hears(/^اعطای مجوز\s*\|\s*([0-9۰-۹٠-٩]+)\s*\|\s*(.+)$/u, async ctx => {
+    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+    const userId = String(mmNum(ctx.match[1]));
+    const code = mmText(ctx.match[2]);
+    if (!Number.isSafeInteger(Number(userId)) || Number(userId) <= 0) {
+      return ctx.reply("شناسه تلگرام معتبر نیست.");
+    }
+    const type = mm.prepare(`SELECT name FROM black_market_license_types
+      WHERE code=? AND active=1`).get(code);
+    if (!type) return ctx.reply("نوع مجوز فعال پیدا نشد.");
+    mm.prepare(`INSERT INTO black_market_user_licenses
+      (telegram_id,license_code,granted_by,granted_at,active)
+      VALUES (?,?,?,?,1)
+      ON CONFLICT(telegram_id,license_code) DO UPDATE SET
+      granted_by=excluded.granted_by,granted_at=excluded.granted_at,active=1`)
+      .run(userId, code, String(ctx.from.id), mmNow());
+    return ctx.reply(`✅ مجوز «${type.name}» برای شناسه ${userId} فعال شد.`);
+  });
+
+  bot.hears(/^لغو مجوز\s*\|\s*([0-9۰-۹٠-٩]+)\s*\|\s*(.+)$/u, async ctx => {
+    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+    const userId = String(mmNum(ctx.match[1]));
+    const code = mmText(ctx.match[2]);
+    const r = mm.prepare(`UPDATE black_market_user_licenses SET active=0
+      WHERE telegram_id=? AND license_code=? AND active=1`).run(userId, code);
+    return ctx.reply(r.changes ? "✅ مجوز لغو شد." : "مجوز فعالی پیدا نشد.");
+  });
+
+  bot.hears(/^تعیین مجوز کالا\s*\|\s*بازار سیاه\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
+    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+    const store = mmText(ctx.match[1]);
+    const name = mmText(ctx.match[2]);
+    const code = mmText(ctx.match[3]);
+    const type = mm.prepare(`SELECT name FROM black_market_license_types
+      WHERE code=? AND active=1`).get(code);
+    if (!type) return ctx.reply("نوع مجوز فعال پیدا نشد.");
+    const item = mmFindItem("بازار سیاه", store, name);
+    if (!item || !item.active || !item.store_active) return ctx.reply("کالای فعال پیدا نشد.");
+    mm.prepare("UPDATE shop_catalog SET required_license=? WHERE item_code=?")
+      .run(code, item.item_code);
+    return ctx.reply(`✅ خرید «${item.name}» نیازمند مجوز «${type.name}» شد.`);
+  });
+
+  bot.hears(/^حذف مجوز کالا\s*\|\s*بازار سیاه\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
+    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+    const item = mmFindItem("بازار سیاه", mmText(ctx.match[1]), mmText(ctx.match[2]));
+    if (!item) return ctx.reply("کالا پیدا نشد.");
+    mm.prepare("UPDATE shop_catalog SET required_license='' WHERE item_code=?")
+      .run(item.item_code);
+    return ctx.reply("✅ شرط مجوز از این کالا برداشته شد.");
+  });
+
+  // بررسی مجوز پیش از رسیدن پیام به دستور خرید اصلی
+  bot.hears(/^خرید\s*\|\s*بازار سیاه\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async (ctx, next) => {
+    const item = mmFindItem("بازار سیاه", mmText(ctx.match[1]), mmText(ctx.match[2]));
+    if (!item || !item.active || !item.store_active) return next();
+
+    const code = mmText(item.required_license);
+    if (!code) return next();
+
+    const type = mm.prepare(`SELECT name FROM black_market_license_types
+      WHERE code=? AND active=1`).get(code);
+    if (!type) return ctx.reply("⛔ خرید این کالا غیرفعال است؛ مجوز معتبر نیست.");
+
+    const hasLicense = mm.prepare(`SELECT 1 FROM black_market_user_licenses
+      WHERE telegram_id=? AND license_code=? AND active=1`)
+      .get(String(ctx.from.id), code);
+
+    if (!hasLicense) {
+      return ctx.reply(`🔒 برای خرید این کالا مجوز «${type.name}» لازم است.`);
+    }
+    return next();
+  });
+  // END MONTADORIA BLACK MARKET LICENSES V1
+
   const mmNow = () => Math.floor(Date.now() / 1000);
   const mmText = x => String(x ?? "").trim();
 
