@@ -808,6 +808,50 @@ export function registerObserver(bot) {
     }
   };
 
+
+  // MONTADORIA_FOOD_REMINDER_V1
+  try {
+    db.exec("ALTER TABLE observer_needs ADD COLUMN last_food_warning_at INTEGER");
+  } catch (e) {
+    if (!String(e.message).includes("duplicate column")) throw e;
+  }
+
+  const checkFoodReminders = async () => {
+    const t = now();
+    const people = db.prepare(`
+      SELECT telegram_id, last_food_at
+      FROM observer_needs
+      WHERE last_food_at > 0
+        AND ? - last_food_at >= 28800
+        AND (last_food_warning_at IS NULL OR last_food_warning_at < last_food_at)
+    `).all(t);
+
+    for (const person of people) {
+      try {
+        await bot.api.sendMessage(
+          Number(person.telegram_id),
+          "🍽️ یادآوری مونتادوریا\n\nمدت زیادی از آخرین غذایت گذشته است. پس از ورود به مپ با #ورود، برای ثبت غذا از #خوردن استفاده کن."
+        );
+        db.prepare(`
+          UPDATE observer_needs
+          SET last_food_warning_at = ?, updated_at = ?
+          WHERE telegram_id = ?
+        `).run(t, t, person.telegram_id);
+
+        await report(bot.api, `🍽️ هشدار گرسنگی ارسال شد | شناسه: ${person.telegram_id}`);
+      } catch (e) {
+        console.error("خطا در هشدار گرسنگی:", e);
+      }
+    }
+  };
+
+  const foodReminderTimer = setInterval(() => {
+    checkFoodReminders().catch(console.error);
+  }, 60000);
+  foodReminderTimer.unref?.();
+  checkFoodReminders().catch(console.error);
+  // END MONTADORIA_FOOD_REMINDER_V1
+
   const vampireReminderTimer = setInterval(() => {
     checkVampireBloodReminders().catch(error =>
       console.error("خطا در یادآوری خون‌آشام‌ها:", error)
