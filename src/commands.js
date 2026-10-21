@@ -2466,11 +2466,11 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
     const cycle = taxCalculate(userId);
     const a = taxAssets(userId);
     const msg =
-      '⟡ وضعیت مالیاتی مونتادوریا ⟡\\n' +
-      'ارزش املاک: ' + taxMoney(a.properties) + '\\n' +
-      'درآمد روزانه کسب‌وکارها: ' + taxMoney(a.businessIncome) + '\\n' +
-      'ارزش کسب‌وکارها: ' + taxMoney(a.businessValue) + '\\n' +
-      'ارزش خودروها: ' + taxMoney(a.cars) + '\\n' +
+      '⟡ وضعیت مالیاتی مونتادوریا ⟡\n' +
+      'ارزش املاک: ' + taxMoney(a.properties) + '\n' +
+      'درآمد روزانه کسب‌وکارها: ' + taxMoney(a.businessIncome) + '\n' +
+      'ارزش کسب‌وکارها: ' + taxMoney(a.businessValue) + '\n' +
+      'ارزش خودروها: ' + taxMoney(a.cars) + '\n' +
       'بدهی قابل پرداخت: ' + taxMoney(cycle.debt);
     return taxReply(ctx, msg);
   });
@@ -2503,7 +2503,7 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
       taxLog.run(userId, -amount, 'پرداخت مالیات', Date.now());
     });
     pay();
-    return taxReply(ctx, '✅ پرداخت مالیات انجام شد.\\nمبلغ پرداختی: ' + taxMoney(amount));
+    return taxReply(ctx, '✅ پرداخت مالیات انجام شد.\nمبلغ پرداختی: ' + taxMoney(amount));
   });
 
   bot.hears(/^تنظیم مالیات\s*\|\s*(ملک|کسب‌وکار|کسب و کار|نگهداری)\s*\|\s*(\d+(?:\.\d+)?)$/u, async (ctx) => {
@@ -2529,11 +2529,11 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
     const b = taxGetSetting.get('business_rate')?.value ?? 5;
     const u = taxGetSetting.get('upkeep_rate')?.value ?? 1;
     return taxReply(ctx,
-      '⟡ گزارش مالیات ⟡\\n' +
-      'افراد بدهکار: ' + totals.people + '\\n' +
-      'مجموع بدهی: ' + taxMoney(totals.debt) + '\\n' +
-      'نرخ ملک: ' + p + '% ماهانه\\n' +
-      'نرخ کسب‌وکار: ' + b + '% از درآمد روزانه\\n' +
+      '⟡ گزارش مالیات ⟡\n' +
+      'افراد بدهکار: ' + totals.people + '\n' +
+      'مجموع بدهی: ' + taxMoney(totals.debt) + '\n' +
+      'نرخ ملک: ' + p + '% ماهانه\n' +
+      'نرخ کسب‌وکار: ' + b + '% از درآمد روزانه\n' +
       'نرخ نگهداری: ' + u + '% ماهانه');
   });
 }
