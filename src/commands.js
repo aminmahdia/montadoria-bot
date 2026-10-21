@@ -2341,7 +2341,7 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
 // MONTADORIA TAX SYSTEM V1
 {
   const taxDb = db;
-  taxDb.exec(\`
+  taxDb.exec(`
     CREATE TABLE IF NOT EXISTS montadoria_tax_settings (
       setting TEXT PRIMARY KEY,
       value REAL NOT NULL
@@ -2358,7 +2358,7 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
       description TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
-  \`);
+  `);
 
   const taxDefaults = [
     ['property_rate', 1],
@@ -2368,10 +2368,10 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
   const taxGetSetting = taxDb.prepare(
     'SELECT value FROM montadoria_tax_settings WHERE setting = ?'
   );
-  const taxSetSetting = taxDb.prepare(\`
+  const taxSetSetting = taxDb.prepare(`
     INSERT INTO montadoria_tax_settings(setting, value) VALUES (?, ?)
     ON CONFLICT(setting) DO UPDATE SET value = excluded.value
-  \`);
+  `);
   for (const [key, value] of taxDefaults) {
     if (!taxGetSetting.get(key)) taxSetSetting.run(key, value);
   }
@@ -2398,13 +2398,13 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
       'SELECT COALESCE(SUM(price), 0) AS total FROM player_properties WHERE owner_id = ?'
     ).get(userId)?.total || 0;
 
-    const businesses = taxDb.prepare(\`
+    const businesses = taxDb.prepare(`
       SELECT COALESCE(SUM(c.price), 0) AS total,
              COALESCE(SUM(c.daily_income), 0) AS income
       FROM player_businesses p
       JOIN business_catalog c ON c.business_id = p.business_id
       WHERE p.owner_id = ?
-    \`).get(userId) || { total: 0, income: 0 };
+    `).get(userId) || { total: 0, income: 0 };
 
     let cars = { total: 0 };
     try {
@@ -2521,10 +2521,10 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
 
   bot.hears(/^گزارش مالیات$/u, async (ctx) => {
     if (!taxIsManager(ctx.from.id)) return;
-    const totals = taxDb.prepare(\`
+    const totals = taxDb.prepare(`
       SELECT COUNT(*) AS people, COALESCE(SUM(debt), 0) AS debt
       FROM montadoria_tax_cycles WHERE debt > 0
-    \`).get();
+    `).get();
     const p = taxGetSetting.get('property_rate')?.value ?? 1;
     const b = taxGetSetting.get('business_rate')?.value ?? 5;
     const u = taxGetSetting.get('upkeep_rate')?.value ?? 1;
