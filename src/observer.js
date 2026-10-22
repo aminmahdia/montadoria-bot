@@ -1606,26 +1606,67 @@ export function registerObserver(bot) {
       }
     }
 
-    // MONTADORIA_SLEEP_ROLEPLAY_BLOCK_V1
-    // جلوگیری از رول تا پایان دوره خواب ۶ ساعته
-    const sleepState = db.prepare(`
-      SELECT sleep_until FROM observer_needs WHERE telegram_id = ?
+    // MONTADORIA_SLEEP_ROLEPLAY_BLOCK_V2
+    // جلوگیری واقعی از رول در مدت خواب با حذف پیام رول
+
+    const activeSleepLockState = db.prepare(`
+      SELECT sleep_until
+      FROM observer_needs
+      WHERE telegram_id = ?
     `).get(user.id);
 
-    const currentNeedTime = now();
+    const currentSleepLockTime = now();
+
+    const isSleepLockedRp = text.split(/\r?\n/).some(line =>
+      /^[-*]\s*\S/.test(line.trim())
+    );
+
     if (
-      sleepState &&
-      Number(sleepState.sleep_until || 0) > currentNeedTime &&
-      !text.split(/\\r?\\n/).some(line =>
-        ["#خواب", "#خوابیدن", "#ورود", "#خروج"].includes(line.trim().split(/\\s+/)[0])
-      )
+      isSleepLockedRp &&
+      Number(activeSleepLockState?.sleep_until || 0) > currentSleepLockTime
     ) {
-      await ctx.reply(
-        `🌙 در حال استراحت هستی و تا پایان خواب اجازه رول نداری. حدود ${Math.ceil((Number(sleepState.sleep_until) - currentNeedTime) / 60)} دقیقه باقی مانده است.`
+      let sleepMessageDeleted = false;
+
+      try {
+        await ctx.deleteMessage();
+        sleepMessageDeleted = true;
+      } catch (error) {
+        console.error(
+          "حذف پیام رول هنگام خواب ناموفق بود؛ دسترسی حذف پیام را بررسی کنید:",
+          error
+        );
+      }
+
+      const remainingMinutes = Math.ceil(
+        (
+          Number(activeSleepLockState.sleep_until) -
+          currentSleepLockTime
+        ) / 60
       );
+
+      if (sleepMessageDeleted) {
+        await ctx.reply(
+          `🌙 رول شما حذف شد؛ شخصیت شما در حال خواب است و تا پایان خواب اجازه رول ندارد. زمان باقی‌مانده: ${remainingMinutes} دقیقه.`
+        );
+      } else {
+        await ctx.reply(
+          "⛔ شخصیت شما در حال خواب است، اما ربات نتوانست پیام رول را حذف کند. مدیر گروه باید دسترسی حذف پیام را به ربات بدهد."
+        );
+      }
+
+      try {
+        await report(
+          ctx.api,
+          `⛔ تلاش برای رول هنگام خواب | کاربر: ${user.id} | گروه: ${ctx.chat.id} | حذف پیام: ${sleepMessageDeleted ? "موفق" : "ناموفق"}`
+        );
+      } catch (error) {
+        console.error("گزارش تلاش برای رول هنگام خواب ناموفق بود:", error);
+      }
+
       return;
     }
-    // END MONTADORIA_SLEEP_ROLEPLAY_BLOCK_V1
+
+    // END MONTADORIA_SLEEP_ROLEPLAY_BLOCK_V2
 
     const validation = validateRoleplay(text);
 
