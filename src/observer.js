@@ -1375,42 +1375,37 @@ export function registerObserver(bot) {
     const text = ctx.msg.text;
     if (!text || text.startsWith("/")) return;
 
-    // محدودیت فعالیت هنگام خواب
-    const currentSleep = db.prepare(`
-      SELECT sleep_until
-      FROM observer_needs
-      WHERE telegram_id = ?
-    `).get(user.id);
+    // محدودیت پیام هنگام خواب: فقط ورود و خروج مجاز است
+const currentSleep = db.prepare(`
+  SELECT sleep_until
+  FROM observer_needs
+  WHERE telegram_id = ?
+`).get(user.id);
 
-    const currentUnixTime = Math.floor(Date.now() / 1000);
-    const exactExitCommand = (ctx.msg.text || "").trim() === "#خروج";
+const currentUnixTime = Math.floor(Date.now() / 1000);
+const sleepCommand = text.trim().split(/\s+/)[0];
 
-    if (
-      currentSleep &&
-      Number(currentSleep.sleep_until || 0) > currentUnixTime &&
-      !exactExitCommand
-    ) {
-      try {
-        await ctx.api.deleteMessage(ctx.chat.id, ctx.msg.message_id);
+if (
+  Number(currentSleep?.sleep_until || 0) > currentUnixTime &&
+  !["#ورود", "#خروج"].includes(sleepCommand)
+) {
+  try {
+    await ctx.api.deleteMessage(ctx.chat.id, ctx.msg.message_id);
+    await report(
+      ctx.api,
+      `🌙 پیام هنگام خواب حذف شد | کاربر: ${user.id} | گروه: ${ctx.chat.id}`
+    );
+  } catch (error) {
+    console.error("Sleep message deletion failed:", error.message);
+    await report(
+      ctx.api,
+      `⚠️ حذف پیام هنگام خواب ناموفق بود | کاربر: ${user.id} | گروه: ${ctx.chat.id} | ${error.message}`
+    );
+  }
+  return;
+}
 
-        await report(
-          ctx.api,
-          `🌙 فعالیت هنگام خواب | کاربر: ${user.id} | گروه: ${ctx.chat.id} | پیام حذف شد`
-        );
-      } catch (error) {
-        console.error("Sleep message deletion failed:", error.message);
-
-        await report(
-          ctx.api,
-          `⚠️ حذف پیام هنگام خواب ناموفق بود | کاربر: ${user.id} | گروه: ${ctx.chat.id} | ${error.message}`
-        );
-      }
-
-      return;
-    }
-
-
-    // فرمان‌های هشتگی مجاز باید مستقل یا در خطوط جداگانه باشند.
+// فرمان‌های هشتگی مجاز باید مستقل یا در خطوط جداگانه باشند.
     // مدیریت ورود و خروج مپ
 
     // MONTADORIA_BLOOD_TAG_V1
@@ -1606,67 +1601,7 @@ export function registerObserver(bot) {
       }
     }
 
-    // MONTADORIA_SLEEP_ROLEPLAY_BLOCK_V2
-    // جلوگیری واقعی از رول در مدت خواب با حذف پیام رول
 
-    const activeSleepLockState = db.prepare(`
-      SELECT sleep_until
-      FROM observer_needs
-      WHERE telegram_id = ?
-    `).get(user.id);
-
-    const currentSleepLockTime = now();
-
-    const isSleepLockedRp = text.split(/\r?\n/).some(line =>
-      /^[-*]\s*\S/.test(line.trim())
-    );
-
-    if (
-      isSleepLockedRp &&
-      Number(activeSleepLockState?.sleep_until || 0) > currentSleepLockTime
-    ) {
-      let sleepMessageDeleted = false;
-
-      try {
-        await ctx.deleteMessage();
-        sleepMessageDeleted = true;
-      } catch (error) {
-        console.error(
-          "حذف پیام رول هنگام خواب ناموفق بود؛ دسترسی حذف پیام را بررسی کنید:",
-          error
-        );
-      }
-
-      const remainingMinutes = Math.ceil(
-        (
-          Number(activeSleepLockState.sleep_until) -
-          currentSleepLockTime
-        ) / 60
-      );
-
-      if (sleepMessageDeleted) {
-        await ctx.reply(
-          `🌙 رول شما حذف شد؛ شخصیت شما در حال خواب است و تا پایان خواب اجازه رول ندارد. زمان باقی‌مانده: ${remainingMinutes} دقیقه.`
-        );
-      } else {
-        await ctx.reply(
-          "⛔ شخصیت شما در حال خواب است، اما ربات نتوانست پیام رول را حذف کند. مدیر گروه باید دسترسی حذف پیام را به ربات بدهد."
-        );
-      }
-
-      try {
-        await report(
-          ctx.api,
-          `⛔ تلاش برای رول هنگام خواب | کاربر: ${user.id} | گروه: ${ctx.chat.id} | حذف پیام: ${sleepMessageDeleted ? "موفق" : "ناموفق"}`
-        );
-      } catch (error) {
-        console.error("گزارش تلاش برای رول هنگام خواب ناموفق بود:", error);
-      }
-
-      return;
-    }
-
-    // END MONTADORIA_SLEEP_ROLEPLAY_BLOCK_V2
 
     const validation = validateRoleplay(text);
 
