@@ -89,7 +89,7 @@ db.exec(`
   );
 `);
 
-const now = () => new Date().toISOString();
+const now = () => Math.floor(Date.now() / 1000);
 
 function isOwner(ctx) {
   return Boolean(OWNER_ID && ctx.from?.id === OWNER_ID);
