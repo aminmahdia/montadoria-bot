@@ -1522,43 +1522,110 @@ export function registerObserver(bot) {
     }
 
     // ثبت خودکار رویدادهای غذا و خواب
-    const hasNeedTag = tag => text.split(/\r?\n/).some(
-      line => line.trim().split(/\s+/)[0] === tag
+    const hasNeedTag = tag => text.split(/\\r?\\n/).some(
+      line => line.trim().split(/\\s+/)[0] === tag
     );
 
-    if (hasNeedTag("#خوردن")) {
-      updateNeed(user.id, "food");
-      await report(
-        ctx.api,
-        `🍽️ ثبت غذا | کاربر: ${user.id} | گروه: ${ctx.chat.id}`
+    // تاریخچه غذا برای محدودیت هر ۸ ساعت یک‌بار
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS observer_food_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id INTEGER NOT NULL,
+        eaten_at INTEGER NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS idx_observer_food_log_user_time
+      ON observer_food_log (telegram_id, eaten_at);
+    `);
+
+    const currentTime = now();
+
+    if (hasNeedTag("#خوردن")) {
+      const lastFood = db.prepare(`
+        SELECT MAX(eaten_at) AS last_at
+        FROM observer_food_log
+        WHERE telegram_id = ?
+      `).get(user.id).last_at;
+      if (lastFood && currentTime - Number(lastFood) < 28800) {
+        const remaining = Math.ceil((28800 - (currentTime - Number(lastFood))) / 3600);
+        await ctx.reply(`⛔ برای ثبت غذای بعدی باید ۸ ساعت فاصله باشد. زمان باقی‌مانده: حدود ${remaining} ساعت.`);
+      } else {
+        db.prepare(`
+          INSERT INTO observer_food_log (telegram_id, eaten_at)
+          VALUES (?, ?)
+        `).run(user.id, currentTime);
+
+        updateNeed(user.id, "food");
+
+        await report(
+          ctx.api,
+          `🍽️ ثبت غذا | کاربر: ${user.id} | فاصله مجاز: ۸ ساعت | گروه: ${ctx.chat.id}`
+        );
+      }
     }
 
     if (hasNeedTag("#خوابیدن") || hasNeedTag("#خواب")) {
       ensureNeeds(user.id);
 
-      const currentTime = now();
-      const sleepHours = Math.max(
-        1,
-        Number(process.env.SLEEP_DURATION_HOURS || 6)
-      );
-
-      db.prepare(`
-        UPDATE observer_needs
-        SET last_sleep_at = ?, sleep_until = ?, updated_at = ?
+      const personNeeds = db.prepare(`
+        SELECT last_sleep_at
+        FROM observer_needs
         WHERE telegram_id = ?
-      `).run(
-        currentTime,
-        currentTime + sleepHours * 3600,
-        currentTime,
-        user.id
-      );
+      `).get(user.id);
 
-      await report(
-        ctx.api,
-        `🌙 ثبت خواب | کاربر: ${user.id} | مدت: ${sleepHours} ساعت | گروه: ${ctx.chat.id}`
-      );
+      const lastSleepAt = Number(personNeeds?.last_sleep_at || 0);
+
+      if (lastSleepAt > 0 && currentTime - lastSleepAt < 86400) {
+        const remainingHours = Math.ceil(
+          (86400 - (currentTime - lastSleepAt)) / 3600
+        );
+
+        await ctx.reply(
+          `⛔ در هر ۲۴ ساعت فقط یک بار می‌توانی خواب را ثبت کنی. حدود ${remainingHours} ساعت تا امکان ثبت خواب بعدی باقی مانده است.`
+        );
+      } else {
+        const sleepHours = Math.max(
+          1,
+          Number(process.env.SLEEP_DURATION_HOURS || 6)
+        );
+
+        db.prepare(`
+          UPDATE observer_needs
+          SET last_sleep_at = ?, sleep_until = ?, updated_at = ?
+          WHERE telegram_id = ?
+        `).run(
+          currentTime,
+          currentTime + sleepHours * 3600,
+          currentTime,
+          user.id
+        );
+
+        await report(
+          ctx.api,
+          `🌙 ثبت خواب | کاربر: ${user.id} | مدت: ${sleepHours} ساعت | گروه: ${ctx.chat.id}`
+        );
+      }
     }
+
+    // MONTADORIA_SLEEP_ROLEPLAY_BLOCK_V1
+    // جلوگیری از رول تا پایان دوره خواب ۶ ساعته
+    const sleepState = db.prepare(`
+      SELECT sleep_until FROM observer_needs WHERE telegram_id = ?
+    `).get(user.id);
+
+    const currentNeedTime = now();
+    if (
+      sleepState &&
+      Number(sleepState.sleep_until || 0) > currentNeedTime &&
+      !text.split(/\\r?\\n/).some(line =>
+        ["#خواب", "#خوابیدن", "#ورود", "#خروج"].includes(line.trim().split(/\\s+/)[0])
+      )
+    ) {
+      await ctx.reply(
+        `🌙 در حال استراحت هستی و تا پایان خواب اجازه رول نداری. حدود ${Math.ceil((Number(sleepState.sleep_until) - currentNeedTime) / 60)} دقیقه باقی مانده است.`
+      );
+      return;
+    }
+    // END MONTADORIA_SLEEP_ROLEPLAY_BLOCK_V1
 
     const validation = validateRoleplay(text);
 
