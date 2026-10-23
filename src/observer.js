@@ -139,11 +139,42 @@ async function report(botOrApi, text) {
   }
 
   try {
-    const infoHashtag = "#اطلاعات_مونتادوریا";
     const reportText = String(text ?? "").trimEnd();
-    const taggedReportText = reportText.includes(infoHashtag)
-      ? reportText
-      : `${reportText}\n\n${infoHashtag}`;
+
+    const hashtagRules = [
+      { pattern: /انتقال.{0,30}(وجه|پول|بانک|کارت)|(?:وجه|پول).{0,30}انتقال/i, tag: "#انتقال_وجه" },
+      { pattern: /مالیات|مالیاتی/i, tag: "#مالیات" },
+      { pattern: /کارت\s*بانکی|شماره\s*کارت/i, tag: "#کارت_بانکی" },
+      { pattern: /بانک|موجودی|کیف\s*پول|واریز|برداشت|پول|وجه/i, tag: "#امور_مالی" },
+      { pattern: /ملک|املاک|خانه|زمین|اجاره/i, tag: "#املاک" },
+      { pattern: /خودرو|ماشین|وسیله\s*نقلیه|پلاک/i, tag: "#خودرو" },
+      { pattern: /کسب.?وکار|سود\s*روزانه|درآمد\s*روزانه/i, tag: "#کسب_وکار" },
+      { pattern: /فروشگاه|بازار|محصول|کالا/i, tag: "#فروشگاه" },
+      { pattern: /خرید|خریدار|خریداری/i, tag: "#خرید" },
+      { pattern: /فروش|فروشنده|فروخته/i, tag: "#فروش" },
+      { pattern: /اخطار|هشدار|محدودیت|مسدود|سکوت|رفع\s*محدودیت/i, tag: "#مدیریت" },
+      { pattern: /خواب|خوردن|غذا|گرسنگی|تشنگی|خون.?آشام/i, tag: "#نیازهای_کاربر" },
+      { pattern: /هویت|نژاد|گرگینه|دگرپیکر/i, tag: "#هویت" },
+      { pattern: /ثبت\s*گروه|گروه\s*نقش.?آفرینی/i, tag: "#گروه_نقش_آفرینی" },
+      { pattern: /کاربر|پروفایل|ثبت.?نام|نام\s*کاربری/i, tag: "#کاربر" },
+      { pattern: /ربات|خطا|سیستم|گزارش/i, tag: "#گزارش_سیستم" }
+    ];
+
+    const matchedTags = hashtagRules
+      .filter(rule => rule.pattern.test(reportText))
+      .map(rule => rule.tag);
+
+    const tagsToAppend = [...new Set(matchedTags)]
+      .filter(tag => !reportText.includes(tag))
+      .slice(0, 3);
+
+    if (tagsToAppend.length === 0 && matchedTags.length === 0) {
+      tagsToAppend.push("#گزارش_سایر");
+    }
+
+    const taggedReportText = tagsToAppend.length
+      ? `${reportText}\n\n${tagsToAppend.join(" ")}`
+      : reportText;
 
     await api.sendMessage(OBSERVER_GROUP_ID, taggedReportText, {
       parse_mode: "HTML"
