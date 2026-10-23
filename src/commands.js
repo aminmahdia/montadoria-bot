@@ -3219,7 +3219,7 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
       }
 
       try {
-        const chat = await ctx.telegram.getChat(String(store.chat_id));
+        const chat = await ctx.api.getChat(String(store.chat_id));
         const title = chat.title || store.chat_title || "گروه رول";
         let link = "";
 
@@ -3229,7 +3229,7 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
           link = store.chat_link;
         } else {
           try {
-            const invite = await ctx.telegram.createChatInviteLink(
+            const invite = await ctx.api.createChatInviteLink(
               String(store.chat_id),
               { name: `Montadoria - ${store.name}` }
             );
