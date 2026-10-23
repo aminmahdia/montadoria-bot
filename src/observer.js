@@ -139,7 +139,13 @@ async function report(botOrApi, text) {
   }
 
   try {
-    await api.sendMessage(OBSERVER_GROUP_ID, text, {
+    const infoHashtag = "#اطلاعات_مونتادوریا";
+    const reportText = String(text ?? "").trimEnd();
+    const taggedReportText = reportText.includes(infoHashtag)
+      ? reportText
+      : `${reportText}\n\n${infoHashtag}`;
+
+    await api.sendMessage(OBSERVER_GROUP_ID, taggedReportText, {
       parse_mode: "HTML"
     });
   } catch (error) {
