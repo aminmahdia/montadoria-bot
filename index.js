@@ -23,7 +23,7 @@ bot.catch((err) => {
 console.log("MONTADORIA bot is starting...")
 
 bot.start({
-  allowed_updates: API_CONSTANTS.DEFAULT_UPDATE_TYPES,
+  allowed_updates: [...new Set([...API_CONSTANTS.DEFAULT_UPDATE_TYPES, "chat_member"])],
   onStart: (botInfo) => {
     console.log(`Bot started as @${botInfo.username}`)
   },

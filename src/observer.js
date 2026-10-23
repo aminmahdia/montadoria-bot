@@ -473,6 +473,125 @@ function updateNeed(telegramId, field) {
 }
 
 export function registerObserver(bot) {
+  // MONTADORIA_REJOIN_AFTER_UNMARKED_LEAVE_V1
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS montadoria_map_invite_links (
+      chat_id TEXT PRIMARY KEY,
+      invite_link TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
+
+  bot.on("chat_member", async (ctx) => {
+    try {
+      const event = ctx.update?.chat_member;
+      if (!event?.chat || !event?.old_chat_member ||
+          !event?.new_chat_member) {
+        return;
+      }
+
+      const chat = event.chat;
+      if (!["group", "supergroup"].includes(chat.type)) return;
+
+      const user = event.new_chat_member.user;
+      if (!user || user.is_bot) return;
+
+      const oldMember = event.old_chat_member;
+      const newMember = event.new_chat_member;
+
+      const wasMember =
+        ["creator", "administrator", "member"].includes(oldMember.status) ||
+        (
+          oldMember.status === "restricted" &&
+          oldMember.is_member === true
+        );
+
+      // فقط خروج داوطلبانه؛ اخراج یا مسدودشدن کاربر را شامل نمی‌شود.
+      if (!wasMember || newMember.status !== "left") return;
+
+      // کاربر باید در همین مپ #ورود زده باشد و هنوز #خروج نزده باشد.
+      const activeMap = db.prepare(`
+        SELECT chat_id
+        FROM observer_active_map
+        WHERE telegram_id = ? AND chat_id = ?
+      `).get(user.id, chat.id);
+
+      if (!activeMap) return;
+
+      let title = chat.title || "مپ نقش‌آفرینی";
+      let link = "";
+      let chatInfo = null;
+
+      try {
+        chatInfo = await ctx.api.getChat(chat.id);
+        title = chatInfo.title || title;
+      } catch (error) {
+        console.error(
+          "Map info lookup failed:",
+          error.message || error
+        );
+      }
+
+      // گروه عمومی: لینک مستقیم؛ گروه خصوصی: لینک ذخیره‌شده.
+      if (chatInfo?.username) {
+        link = `https://t.me/${chatInfo.username}`;
+      } else {
+        const cached = db.prepare(`
+          SELECT invite_link
+          FROM montadoria_map_invite_links
+          WHERE chat_id = ?
+        `).get(String(chat.id));
+
+        link = cached?.invite_link || chatInfo?.invite_link || "";
+
+        // در صورت نبودن لینک ذخیره‌شده، لینک دعوت جدید بساز.
+        if (!link) {
+          try {
+            const invite = await ctx.api.createChatInviteLink(chat.id, {
+              name: "بازگشت به مپ مونتادوریا"
+            });
+
+            link = invite.invite_link;
+          } catch (error) {
+            console.error(
+              "Map invite creation failed:",
+              error.message || error
+            );
+          }
+        }
+
+        if (link) {
+          db.prepare(`
+            INSERT OR REPLACE INTO montadoria_map_invite_links
+              (chat_id, invite_link, updated_at)
+            VALUES (?, ?, ?)
+          `).run(String(chat.id), link, Date.now());
+        }
+      }
+
+      const message =
+        `⛔️ نباید بدون ثبت #خروج از مپ «${title}» لفت بدهی.\n\n` +
+        `حضور تو در این مپ هنوز فعال است و خروجت در سیستم مونتادوریا ثبت نشده.\n\n` +
+        (
+          link
+            ? `🗺️ نام مپ: ${title}\n🔗 لینک بازگشت به مپ:\n${link}\n\n`
+            : `🗺️ نام مپ: ${title}\n⚠️ لینک دعوت در دسترس نیست؛ از مدیران مپ لینک ورود بگیر.\n\n`
+        ) +
+        `بعد از ورود دوباره، اگر قصد خروج داری، در همان گروه #خروج بفرست.`;
+
+      await ctx.api.sendMessage(user.id, message, {
+        disable_web_page_preview: true
+      });
+
+    } catch (error) {
+      console.error(
+        "Map leave warning failed:",
+        error.message || error
+      );
+    }
+  });
+
 
   bot.command("rpidentity", async ctx => {
     if (!isOwner(ctx)) {
