@@ -3256,11 +3256,15 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
           `🆔 شناسه: <code>${mmStoreLinkEscape(store.chat_id)}</code>` +
           (link ? "" : "\n⚠️ لینک در دسترس نیست؛ دسترسی دعوت ربات را بررسی کن.")
         );
-      } catch (_) {
+      } catch (err) {
+        const reason = String(
+          err?.description || err?.message || "خطای نامشخص"
+        ).slice(0, 250);
+
         lines.push(
           `\n🏪 ${mmStoreLinkEscape(store.name)} (${marketName})\n` +
           `🆔 شناسه: <code>${mmStoreLinkEscape(store.chat_id)}</code>\n` +
-          "⚠️ ربات نتوانست اطلاعات گروه را دریافت کند."
+          `⚠️ خطای تلگرام: ${mmStoreLinkEscape(reason)}`
         );
       }
     }
