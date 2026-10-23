@@ -346,6 +346,20 @@ async function showUserDetails(ctx, targetId, page) {
     ],
   ]
 
+  if (!isOwner(requester)) {
+    const viewOnlyCallbacks = /^(?:user_page:\d+|user_page_current|owner_panel)$/;
+
+    for (let i = keyboard.length - 1; i >= 0; i--) {
+      keyboard[i] = keyboard[i].filter(
+        button => viewOnlyCallbacks.test(button.callback_data || "")
+      );
+
+      if (keyboard[i].length === 0) {
+        keyboard.splice(i, 1);
+      }
+    }
+  }
+
   await ctx.editMessageText(text, {
     reply_markup: {
       inline_keyboard: keyboard,
