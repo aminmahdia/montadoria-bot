@@ -326,6 +326,13 @@ async function showUserDetails(ctx, targetId, page) {
     ],
     [
       {
+        text: "🏦 مدیریت بانک",
+        callback_data:
+          `user_bank:${target.telegram_id}:${page}`,
+      },
+    ],
+    [
+      {
         text: "⭐ مدیریت XP / Level",
         callback_data:
           `user_xp:${target.telegram_id}:${page}`,
@@ -346,7 +353,7 @@ async function showUserDetails(ctx, targetId, page) {
     ],
   ]
 
-  if (!isOwner(requester)) {
+  if (!isModeratorOrOwner(requester)) {
     const viewOnlyCallbacks = /^(?:user_page:\d+|user_page_current|owner_panel)$/;
 
     for (let i = keyboard.length - 1; i >= 0; i--) {
@@ -4588,6 +4595,36 @@ bot.command("testxp", async (ctx) => {
     )
   })
     // =========================
+
+  // MONTADORIA_MODERATOR_USER_LIST_ENTRY
+  const openUsersList = async (ctx) => {
+    syncOwner(ctx.from.id);
+    const requester = getUser(ctx.from.id);
+
+    if (!isModeratorOrOwner(requester)) {
+      await ctx.reply("⛔ فقط مدیر یا مالک اجازه مشاهده فهرست کاربران را دارد.");
+      return;
+    }
+
+    await ctx.reply(
+      "👥 فهرست کاربران\n\nبرای مشاهده کاربران و اطلاعاتشان، دکمه زیر را بزنید.",
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            {
+              text: "👥 نمایش فهرست کاربران",
+              callback_data: "user_page:0",
+            },
+          ]],
+        },
+      }
+    );
+  };
+
+  bot.command("users", openUsersList);
+  bot.hears(/^فهرست کاربران$/u, openUsersList);
+  // END MONTADORIA_MODERATOR_USER_LIST_ENTRY
+
   // CALLBACK: USER LIST
   // =========================
 
@@ -5328,6 +5365,64 @@ bot.command("testxp", async (ctx) => {
   )
 
   // =========================
+
+  // =========================
+  // CALLBACK: BANK MANAGEMENT
+  // =========================
+  bot.callbackQuery(
+    /^user_bank:(\d+):(\d+)$/,
+    async (ctx) => {
+      const requester = getUser(ctx.from.id);
+
+      if (!isOwner(requester)) {
+        await ctx.answerCallbackQuery({
+          text: "⛔ فقط مالک اجازه مدیریت بانک را دارد.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      const targetId = Number(ctx.match[1]);
+      const page = Number(ctx.match[2]);
+      const target = getUser(targetId);
+
+      if (!target) {
+        await ctx.answerCallbackQuery({
+          text: "❌ کاربر پیدا نشد.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageText(
+        [
+          "🏦 مدیریت بانک",
+          "",
+          `کاربر: ${target.display_name}`,
+          `شناسه: ${target.telegram_id}`,
+          `موجودی فعلی بانک: $${target.bank}`,
+          "",
+          "برای تعیین موجودی جدید:",
+          `/setbank ${target.telegram_id} AMOUNT`,
+          "",
+          "مثال:",
+          `/setbank ${target.telegram_id} 5000`,
+        ].join("\n"),
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              {
+                text: "↩️ بازگشت",
+                callback_data: `user_view:${targetId}:${page}`,
+              },
+            ]],
+          },
+        }
+      );
+    }
+  );
+
   // CALLBACK: XP / LEVEL
   // =========================
 
