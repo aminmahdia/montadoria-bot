@@ -460,6 +460,69 @@ async function showOwnerPanel(ctx) {
 
 export function registerCommands(bot) {
 
+  // MONTADORIA_MAP_LOCATOR_V1
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS montadoria_map_invite_links (
+      chat_id TEXT PRIMARY KEY,
+      invite_link TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
+
+  bot.hears(/^(?:مپ من کجاست|من تو کدوم مپم|من در کدام مپ هستم|لینک مپ فعلی)\s*[؟?]?$/u, async (ctx) => {
+    if (!ctx.chat || !["group", "supergroup"].includes(ctx.chat.type)) {
+      await ctx.reply("این دستور را داخل گروه مپ بفرست.");
+      return;
+    }
+
+    try {
+      const info = await ctx.api.getChat(ctx.chat.id);
+      const title = info.title || ctx.chat.title || "مپ فعلی";
+      let link = "";
+
+      if (info.username) {
+        link = `https://t.me/${info.username}`;
+      } else {
+        const cached = db.prepare(
+          "SELECT invite_link FROM montadoria_map_invite_links WHERE chat_id = ?"
+        ).get(String(info.id));
+
+        link = cached?.invite_link || info.invite_link || "";
+
+        if (!link) {
+          try {
+            const invite = await ctx.api.createChatInviteLink(info.id, {
+              name: "لینک مپ مونتادوریا"
+            });
+
+            link = invite.invite_link;
+
+            db.prepare(`
+              INSERT OR REPLACE INTO montadoria_map_invite_links
+                (chat_id, invite_link, updated_at)
+              VALUES (?, ?, ?)
+            `).run(String(info.id), link, Date.now());
+          } catch (_) {
+            link = "";
+          }
+        }
+      }
+
+      const linkText = link
+        ? `🔗 لینک مپ: ${link}`
+        : "🔗 ساخت لینک ممکن نشد؛ ربات برای گروه خصوصی به دسترسی دعوت کاربران نیاز دارد.";
+
+      await ctx.reply(
+        `⟡ موقعیت مپ شما ⟡\n\n` +
+        `🗺️ نام مپ: ${title}\n` +
+        `🆔 شناسه مپ: ${info.id}\n` +
+        `${linkText}`
+      );
+    } catch (_) {
+      await ctx.reply("❌ دریافت اطلاعات مپ با خطا روبه‌رو شد.");
+    }
+  });
+
   bot.command("start", async (ctx) => {
     const telegramId = ctx.from.id
     const username = ctx.from.username ?? null
