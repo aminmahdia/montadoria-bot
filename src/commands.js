@@ -616,28 +616,36 @@ export function registerCommands(bot) {
       return
     }
 
+    // MONTADORIA_ROYAL_PROFILE_V2
     const profileText = [
-        "༺⟡ 𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀 ⟡༻",
-        "",
-        "      شناسنامهٔ رسمی قلمرو",
-        "━━━━━━━━━━━━━━━━━━",
-        "",
-        `👤 نام حساب: ${user.display_name}`,
-        `🔰 نام کاربری: ${user.username ? "@" + user.username : "ثبت نشده"}`,
-        `🆔 شناسهٔ شهروند: ${user.telegram_id}`,
-        "",
-        `💰 دارایی نقدی: ${user.infinite_money ? "♾️ نامحدود" : user.money}`,
-        `🏦 موجودی خزانه: ${user.bank}`,
-        `💳 شماره کارت بانکی: ${user.card_number}`,
-        `⭐ سطح شخصیت: ${user.level}`,
-        `✨ امتیاز تجربه: ${user.xp}`,
-        `⚒ پیشه: ${user.job ?? "بدون شغل"}`,
-        `🏛 جایگاه در قلمرو: ${ROLES[user.role] ?? user.role}`,
-        "",
-        "╔═══⟡༺𓃦༻⟡═══╗",
-    "             𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀",
-    "╚═══⟡༺𓃦༻⟡═══╝",
-      ].join("\n")
+      "༺⟡━━━━━━━━━━━━━━━━━━━━⟡༻",
+      "       𝕸𝕺𝕹𝕿𝕬𝕯𝕺𝕽𝕴𝕬",
+      "𝆹𝅥 𝆭 𝆺𝅥‌ 𝐑𝐎𝐘𝐀𝐋 𝐀𝐑𝐂𝐇𝐈𝐕𝐄𝐒 𝆹𝅥 𝆭 𝆺𝅥‌",
+      "༺⟡━━━━━━━━━━━━━━━━━━━━⟡༻",
+      "",
+      "       ❖ بایگانی رسمی شهروند ❖",
+      "━━━━━━━━━━━━━━━━━━━━",
+      "",
+      "Ⅰ · مشخصات هویتی حساب",
+      "",
+      `♟ نام شهروند: ${user.display_name || "ثبت نشده"}`,
+      `♙ نام کاربری: ${user.username ? "@" + user.username : "ثبت نشده"}`,
+      `🆔 شناسهٔ شهروندی: ${user.telegram_id}`,
+      "",
+      "Ⅱ · دارایی و جایگاه اجتماعی",
+      "",
+      `💰 دارایی نقدی: ${user.infinite_money ? "♾️ نامحدود" : user.money}`,
+      `🏦 موجودی خزانه: ${user.bank}`,
+      `💳 شماره کارت بانکی: ${user.card_number}`,
+      `⭐ سطح شخصیت: ${user.level}`,
+      `✨ امتیاز تجربه: ${user.xp}`,
+      `⚒ حرفه: ${user.job ?? "بدون شغل"}`,
+      `♜ جایگاه اجتماعی: ${ROLES[user.role] ?? user.role}`,
+      "",
+      "╭────────── ⟡ ──────────╮",
+      "      𓃦  𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀  𓃦",
+      "╰────────── ⟡ ──────────╯"
+    ].join("\n")
 
   const registration = db.prepare(`
     SELECT character_name, registration_code, celebrity_name,
@@ -649,18 +657,30 @@ export function registerCommands(bot) {
 
   const registrationText = registration
     ? [
-        `🎭 نام رول: ${registration.character_name}`,
-        `🔢 کد اختصاصی: ${registration.registration_code}`,
-        `👤 نام واقعی سلبریتی: ${registration.celebrity_name}`,
-        `🔰 نام کاربری ثبت‌شده: @${registration.telegram_username}`,
-        `🏰 خاندان: ${registration.family_name || "ثبت نشده"}`,
-        `👩 مادر: ${registration.mother_username ? "@" + registration.mother_username : "ثبت نشده"}`,
-        `👨 پدر: ${registration.father_username ? "@" + registration.father_username : "ثبت نشده"}`,
-        `🆔 شناسه تلگرام: ${user.telegram_id}`,
+        "╭────── ⟡ پروندهٔ نقش‌آفرینی ⟡ ──────╮",
+        "",
+        `🎭 نام شخصیت: ${registration.character_name || "ثبت نشده"}`,
+        `🔐 کد اختصاصی: ${registration.registration_code || "ثبت نشده"}`,
+        `♟ نام واقعی ثبت‌شده: ${registration.celebrity_name || "ثبت نشده"}`,
+        `♙ حساب ثبت‌شده: ${registration.telegram_username ? "@" + registration.telegram_username : "ثبت نشده"}`,
+        "",
+        `♜ خاندان: ${registration.family_name || "در بایگانی ثبت نشده"}`,
+        `♜ مادر: ${registration.mother_username ? "@" + registration.mother_username : "در بایگانی ثبت نشده"}`,
+        `♜ پدر: ${registration.father_username ? "@" + registration.father_username : "در بایگانی ثبت نشده"}`,
+        "",
+        "╰──────────────────────────────╯"
       ].join("\n")
-    : "🎭 شناسنامه‌ای برای این نام کاربری در کانال ثبت نشده است."
+    : [
+        "╭────── ⟡ پروندهٔ نقش‌آفرینی ⟡ ──────╮",
+        "",
+        "برای این حساب، شناسنامهٔ نقش‌آفرینی در بایگانی پیدا نشد.",
+        "",
+        "╰──────────────────────────────╯"
+      ].join("\n");
 
-  const fullProfileText = `${profileText}\n\n━━━━━━━━━━━━━━━━━━\n${registrationText}`
+  const fullProfileText =
+    `${profileText}\n\n${registrationText}\n\n` +
+    "༺⟡━━━━━━━━━━━━━━━━━━━━⟡༻";
 
   if (registration?.photo_file_id) {
     await ctx.replyWithPhoto(registration.photo_file_id, {
