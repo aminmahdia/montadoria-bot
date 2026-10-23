@@ -174,9 +174,9 @@ function userButtonName(user) {
 async function showUserList(ctx, page = 0) {
   const requester = getUser(ctx.from.id)
 
-  if (!isOwner(requester)) {
+  if (!isModeratorOrOwner(requester)) {
     await ctx.answerCallbackQuery({
-      text: "⛔ فقط مالک دسترسی دارد.",
+      text: "⛔ فقط مدیر یا مالک دسترسی دارد.",
       show_alert: true,
     })
     return
@@ -269,9 +269,9 @@ async function showUserList(ctx, page = 0) {
 async function showUserDetails(ctx, targetId, page) {
   const requester = getUser(ctx.from.id)
 
-  if (!isOwner(requester)) {
+  if (!isModeratorOrOwner(requester)) {
     await ctx.answerCallbackQuery({
-      text: "⛔ فقط مالک دسترسی دارد.",
+      text: "⛔ فقط مدیر یا مالک دسترسی دارد.",
       show_alert: true,
     })
     return
