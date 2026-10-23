@@ -1,4 +1,5 @@
 import Database from "better-sqlite3"
+import { randomBytes } from "node:crypto"
 
 const db = new Database("/data/montadoria.db")
 
@@ -115,5 +116,57 @@ if (!hasInfiniteMoney) {
     ADD COLUMN infinite_money INTEGER NOT NULL DEFAULT 0
   `)
 }
+
+
+// MONTADORIA_VIRTUAL_BANK_CARDS_V1
+const cardColumns = db.prepare("PRAGMA table_info(users)").all();
+if (!cardColumns.some(column => column.name === "card_number")) {
+  db.exec("ALTER TABLE users ADD COLUMN card_number TEXT");
+}
+
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS users_card_number_unique
+  ON users(card_number)
+  WHERE card_number IS NOT NULL AND card_number <> ''
+`);
+
+function generateDatabaseCardNumber() {
+  const exists = db.prepare(
+    "SELECT 1 FROM users WHERE card_number = ? LIMIT 1"
+  );
+
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const randomValue = BigInt(
+      "0x" + randomBytes(8).toString("hex")
+    );
+    const cardNumber = (
+      1000000000000000n + randomValue % 9000000000000000n
+    ).toString();
+
+    if (!exists.get(cardNumber)) return cardNumber;
+  }
+
+  throw new Error("Could not generate a unique Montadoria card number");
+}
+
+const usersWithoutCards = db.prepare(`
+  SELECT telegram_id
+  FROM users
+  WHERE card_number IS NULL OR TRIM(card_number) = ''
+`).all();
+
+const assignDatabaseCard = db.prepare(`
+  UPDATE users SET card_number = ?
+  WHERE telegram_id = ?
+    AND (card_number IS NULL OR TRIM(card_number) = '')
+`);
+
+for (const user of usersWithoutCards) {
+  assignDatabaseCard.run(
+    generateDatabaseCardNumber(),
+    user.telegram_id
+  );
+}
+// END MONTADORIA_VIRTUAL_BANK_CARDS_V1
 
 export default db

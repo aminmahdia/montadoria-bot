@@ -1,4 +1,5 @@
 import db from "./database.js"
+import { randomBytes } from "node:crypto"
 
 const OWNER_ID = Number(process.env.OWNER_ID)
 
@@ -10,11 +11,31 @@ const ROLES = {
 
 const USERS_PER_PAGE = 8
 
+
+function generateUniqueCardNumber() {
+  const exists = db.prepare(
+    "SELECT 1 FROM users WHERE card_number = ? LIMIT 1"
+  );
+
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const randomValue = BigInt(
+      "0x" + randomBytes(8).toString("hex")
+    );
+    const cardNumber = (
+      1000000000000000n + randomValue % 9000000000000000n
+    ).toString();
+
+    if (!exists.get(cardNumber)) return cardNumber;
+  }
+
+  throw new Error("Could not generate a unique Montadoria card number");
+}
+
 function getUser(telegramId) {
   return db
     .prepare(`
       SELECT telegram_id, username, display_name,
-             money, infinite_money, bank, xp, level, role, job
+             money, infinite_money, bank, xp, level, role, job, card_number
       FROM users
       WHERE telegram_id = ?
     `)
@@ -25,7 +46,7 @@ function getAllUsers() {
   return db
     .prepare(`
       SELECT telegram_id, username, display_name,
-             money, infinite_money, bank, xp, level, role, job
+             money, infinite_money, bank, xp, level, role, job, card_number
       FROM users
       ORDER BY id ASC
     `)
@@ -296,6 +317,7 @@ async function showUserDetails(ctx, targetId, page) {
     "",
     `💰 Money: ${target.infinite_money ? "♾️" : "$" + target.money}`,
     `🏦 Bank: $${target.bank}`,
+    `💳 Card: ${target.card_number}`,
     `⭐ Level: ${target.level}`,
     `✨ XP: ${target.xp}`,
     `💼 Job: ${target.job ?? "Unemployed"}`,
@@ -461,11 +483,13 @@ export function registerCommands(bot) {
           ? "owner"
           : "user"
 
+      const cardNumber = generateUniqueCardNumber();
       db.prepare(`
         INSERT INTO users (
           telegram_id,
           username,
           display_name,
+          card_number,
           money,
           infinite_money,
           bank,
@@ -476,11 +500,12 @@ export function registerCommands(bot) {
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, 0, 0, 0, 0, 1, ?, NULL, ?, ?)
+        VALUES (?, ?, ?, ?, 0, 0, 0, 0, 1, ?, NULL, ?, ?)
       `).run(
         telegramId,
         username,
         displayName,
+        cardNumber,
         role,
         now,
         now
@@ -489,7 +514,8 @@ export function registerCommands(bot) {
       await ctx.reply(
         `سلام ${displayName}! 👋\n\n` +
         `به MONTADORIA خوش آمدی.\n\n` +
-        `حساب تو با موفقیت ساخته شد.`
+        `حساب تو با موفقیت ساخته شد.\n\n` +
+        `💳 شماره کارت بانکی تو:\n${cardNumber}`
       )
 
       return
@@ -539,6 +565,7 @@ export function registerCommands(bot) {
         "",
         `💰 دارایی نقدی: ${user.infinite_money ? "♾️ نامحدود" : user.money}`,
         `🏦 موجودی خزانه: ${user.bank}`,
+        `💳 شماره کارت بانکی: ${user.card_number}`,
         `⭐ سطح شخصیت: ${user.level}`,
         `✨ امتیاز تجربه: ${user.xp}`,
         `⚒ پیشه: ${user.job ?? "بدون شغل"}`,
@@ -1220,6 +1247,148 @@ export function registerCommands(bot) {
   };
 
   const getEconomyUser = id => getUser(id);
+
+  // MONTADORIA_CARD_TRANSFER_V1
+
+  bot.hears(/^(?:شماره کارت|کارت من|کارت بانکی)$/u, async ctx => {
+    const user = getEconomyUser(ctx.from.id);
+
+    if (!user) {
+      return ctx.reply("❌ حساب شما پیدا نشد. ابتدا /start را بزن.");
+    }
+
+    return ctx.reply(
+      "💳 شماره کارت بانکی مونتادوریا\n\n" +
+      `👤 صاحب حساب: ${user.display_name}\n` +
+      `🔢 شماره کارت: ${user.card_number}\n\n` +
+      "برای انتقال از موجودی بانک استفاده کن:\n" +
+      "#انتقال | شماره کارت گیرنده | مبلغ\n\n" +
+      "مثال:\n" +
+      "#انتقال | 1234567890123456 | 500"
+    );
+  });
+
+  bot.hears(
+    /^\s*\{?\s*#انتقال\s*\|\s*([0-9۰-۹٠-٩]{16})\s*\|\s*([0-9۰-۹٠-٩,٬]+)\s*\}?\s*$/u,
+    async ctx => {
+      const senderId = ctx.from.id;
+      const cardNumber = faNumber(ctx.match[1]);
+      const amount = parseAmount(ctx.match[2].replace(/٬/g, ","));
+
+      if (!amount) {
+        return ctx.reply(
+          "❌ مبلغ معتبر نیست.\n" +
+          "فرمت صحیح:\n#انتقال | شماره کارت | مبلغ"
+        );
+      }
+
+      const sender = getEconomyUser(senderId);
+      if (!sender) {
+        return ctx.reply("ابتدا /start را برای ربات بفرست.");
+      }
+
+      if (Number(sender.bank || 0) < amount) {
+        return ctx.reply("❌ موجودی بانک شما برای این انتقال کافی نیست.");
+      }
+
+      const now = new Date().toISOString();
+
+      try {
+        const result = db.transaction(() => {
+          const currentSender = db.prepare(`
+            SELECT telegram_id, bank
+            FROM users
+            WHERE telegram_id = ?
+          `).get(senderId);
+
+          const recipient = db.prepare(`
+            SELECT telegram_id, username, display_name
+            FROM users
+            WHERE card_number = ?
+            LIMIT 1
+          `).get(cardNumber);
+
+          if (!currentSender) return { error: "sender" };
+          if (!recipient) return { error: "recipient" };
+
+          if (Number(recipient.telegram_id) === Number(senderId)) {
+            return { error: "self" };
+          }
+
+          const debit = db.prepare(`
+            UPDATE users
+            SET bank = COALESCE(bank, 0) - ?, updated_at = ?
+            WHERE telegram_id = ? AND COALESCE(bank, 0) >= ?
+          `).run(amount, now, senderId, amount);
+
+          if (debit.changes !== 1) return { error: "funds" };
+
+          const credit = db.prepare(`
+            UPDATE users
+            SET bank = COALESCE(bank, 0) + ?, updated_at = ?
+            WHERE telegram_id = ?
+          `).run(amount, now, recipient.telegram_id);
+
+          if (credit.changes !== 1) {
+            throw new Error("CARD_TRANSFER_CREDIT_FAILED");
+          }
+
+          economyRecord.run(
+            senderId,
+            recipient.telegram_id,
+            "card_transfer",
+            amount,
+            now
+          );
+
+          return {
+            recipientId: recipient.telegram_id,
+            recipientName: recipient.display_name || recipient.username || "کاربر",
+          };
+        })();
+
+        if (result.error === "sender") {
+          return ctx.reply("❌ حساب فرستنده پیدا نشد.");
+        }
+        if (result.error === "recipient") {
+          return ctx.reply("❌ این شماره کارت در مونتادوریا ثبت نشده است.");
+        }
+        if (result.error === "self") {
+          return ctx.reply("❌ نمی‌توانی به حساب خودت انتقال بدهی.");
+        }
+        if (result.error === "funds") {
+          return ctx.reply("❌ موجودی بانک شما برای این انتقال کافی نیست.");
+        }
+
+        await ctx.reply(
+          "✅ انتقال بانکی با موفقیت انجام شد.\n\n" +
+          `👤 گیرنده: ${result.recipientName}\n` +
+          `💰 مبلغ: ${amount.toLocaleString("en-US")}\n` +
+          "🏦 مبلغ از بانک شما کسر و به بانک گیرنده اضافه شد."
+        );
+
+        try {
+          await ctx.api.sendMessage(
+            result.recipientId,
+            "💳 واریز بانکی جدید در مونتادوریا\n\n" +
+            `💰 مبلغ دریافتی: ${amount.toLocaleString("en-US")}\n` +
+            "🏦 مبلغ به موجودی بانک شما اضافه شد."
+          );
+        } catch (notifyError) {
+          console.error("Card transfer notification failed:", notifyError.message);
+        }
+      } catch (error) {
+        console.error("Card transfer failed:", error);
+        return ctx.reply(
+          "❌ انتقال انجام نشد. موجودی‌ها تغییر نکردند؛ دوباره امتحان کن."
+        );
+      }
+    }
+  );
+
+  // END MONTADORIA_CARD_TRANSFER_V1
+
+
 
   bot.hears(/^(?:موجودی|موجودی من|بالانس)$/u, async ctx => {
     try {
@@ -4542,6 +4711,7 @@ bot.command("testxp", async (ctx) => {
         telegram_id,
         username,
         display_name,
+        card_number,
         money,
         infinite_money,
         bank,
@@ -4552,7 +4722,7 @@ bot.command("testxp", async (ctx) => {
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, 0, 0, 0, 0, 1, 'owner', NULL, ?, ?)
+      VALUES (?, ?, ?, ?, 0, 0, 0, 0, 1, 'owner', NULL, ?, ?)
     `).run(
       ctx.from.id,
       ctx.from.username ?? null,
@@ -4562,6 +4732,7 @@ bot.command("testxp", async (ctx) => {
       ]
         .filter(Boolean)
         .join(" ") || "Owner",
+      generateUniqueCardNumber(),
       now,
       now
     )
