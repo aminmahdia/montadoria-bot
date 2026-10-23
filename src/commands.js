@@ -3164,6 +3164,115 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
     return true;
   };
 
+
+  // MONTADORIA_STORE_GROUP_LINKS_V1
+  {
+    const storeCols = mm.prepare("PRAGMA table_info(shop_stores)")
+      .all().map(x => x.name);
+
+    if (!storeCols.includes("chat_title")) {
+      mm.exec("ALTER TABLE shop_stores ADD COLUMN chat_title TEXT");
+    }
+    if (!storeCols.includes("chat_link")) {
+      mm.exec("ALTER TABLE shop_stores ADD COLUMN chat_link TEXT");
+    }
+  }
+
+  function mmStoreLinkEscape(value) {
+    return String(value ?? "").replace(/[&<>"']/g, ch => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    })[ch]);
+  }
+
+  bot.hears(/^(?:لینک گروه فروشگاه‌ها|نمایش گروه‌های فروشگاه‌ها)$/i, async (ctx) => {
+    if (!mmManage(ctx)) {
+      return ctx.reply("⛔ این دستور مخصوص مدیران مجاز است.");
+    }
+
+    const stores = mm.prepare(`
+      SELECT store_id, market, name, chat_id, chat_link
+      FROM shop_stores
+      ORDER BY market, name
+    `).all();
+
+    if (!stores.length) {
+      return ctx.reply("هنوز فروشگاهی ثبت نشده است.");
+    }
+
+    const lines = ["⟡ لینک و گروه اختصاصی فروشگاه‌ها ⟡"];
+
+    for (const store of stores) {
+      const marketName = store.market === "black"
+        ? "بازار سیاه"
+        : "بازار اصلی";
+
+      if (!store.chat_id) {
+        lines.push(
+          `\n🏪 ${mmStoreLinkEscape(store.name)} (${marketName})\n` +
+          "⛔ گروه اختصاصی تنظیم نشده است."
+        );
+        continue;
+      }
+
+      try {
+        const chat = await ctx.telegram.getChat(String(store.chat_id));
+        const title = chat.title || store.chat_title || "گروه رول";
+        let link = "";
+
+        if (chat.username) {
+          link = `https://t.me/${chat.username}`;
+        } else if (store.chat_link) {
+          link = store.chat_link;
+        } else {
+          try {
+            const invite = await ctx.telegram.createChatInviteLink(
+              String(store.chat_id),
+              { name: `Montadoria - ${store.name}` }
+            );
+            link = invite.invite_link;
+          } catch (_) {
+            link = "";
+          }
+        }
+
+        mm.prepare(`
+          UPDATE shop_stores
+          SET chat_title = ?, chat_link = ?
+          WHERE store_id = ?
+        `).run(title, link || null, store.store_id);
+
+        const safeTitle = mmStoreLinkEscape(title);
+        const titleText = link
+          ? `<a href="${mmStoreLinkEscape(link)}">${safeTitle}</a>`
+          : safeTitle;
+
+        lines.push(
+          `\n🏪 ${mmStoreLinkEscape(store.name)} (${marketName})\n` +
+          `👥 گروه: ${titleText}\n` +
+          `🆔 شناسه: <code>${mmStoreLinkEscape(store.chat_id)}</code>` +
+          (link ? "" : "\n⚠️ لینک در دسترس نیست؛ دسترسی دعوت ربات را بررسی کن.")
+        );
+      } catch (_) {
+        lines.push(
+          `\n🏪 ${mmStoreLinkEscape(store.name)} (${marketName})\n` +
+          `🆔 شناسه: <code>${mmStoreLinkEscape(store.chat_id)}</code>\n` +
+          "⚠️ ربات نتوانست اطلاعات گروه را دریافت کند."
+        );
+      }
+    }
+
+    return ctx.reply(lines.join("\n"), {
+      parse_mode: "HTML",
+      disable_web_page_preview: true
+    });
+  });
+  // END MONTADORIA_STORE_GROUP_LINKS_V1
+
+
   // ساخت فروشگاه مخفی در بازار سیاه
   bot.hears(/^افزودن فروشگاه مخفی\s*\|\s*بازار سیاه\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
     if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
