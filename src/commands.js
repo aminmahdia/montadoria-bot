@@ -2900,6 +2900,21 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
     )
   `);
 
+  // MONTADORIA_STORE_CHAT_BINDING_V1
+  const storeChatCols = mm.prepare(
+    "PRAGMA table_info(shop_stores)"
+  ).all().map(x => x.name);
+
+  if (!storeChatCols.includes("chat_id")) {
+    mm.exec("ALTER TABLE shop_stores ADD COLUMN chat_id TEXT");
+  }
+
+  mm.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_shop_stores_chat_id_unique
+    ON shop_stores(chat_id)
+    WHERE chat_id IS NOT NULL AND chat_id <> ''
+  `);
+
   const cols = mm.prepare("PRAGMA table_info(shop_catalog)").all().map(x => x.name);
   if (!cols.includes("store_id")) {
     mm.exec("ALTER TABLE shop_catalog ADD COLUMN store_id INTEGER");
@@ -2963,7 +2978,8 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
   `).get(market, name);
 
   const mmFindItem = (market, store, name) => mm.prepare(`
-    SELECT c.*, s.market, s.name AS store_name, s.active AS store_active
+    SELECT c.*, s.market, s.name AS store_name,
+           s.active AS store_active, s.chat_id AS store_chat_id
     FROM shop_catalog c
     JOIN shop_stores s ON s.store_id=c.store_id
     WHERE s.market=? AND s.name=? AND c.name=?
@@ -2980,6 +2996,121 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
     }
   };
 
+
+  const mmStorePurchaseError = (ctx, item) => {
+    const storeName = mmText(item?.store_name || "فروشگاه");
+    const chatId = String(item?.store_chat_id ?? "");
+
+    if (!chatId) {
+      return `⛔ گروه رول فروشگاه «${storeName}» هنوز تنظیم نشده است.`;
+    }
+
+    if (
+      !["group", "supergroup"].includes(ctx.chat?.type) ||
+      String(ctx.chat?.id) !== chatId
+    ) {
+      return `⛔ خرید از فروشگاه «${storeName}» فقط در گروه رول اختصاصی آن مجاز است.`;
+    }
+
+    return null;
+  };
+
+  bot.hears(
+    /^تنظیم گپ فروشگاه\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*(.+)$/u,
+    async ctx => {
+      if (!mmManage(ctx)) {
+        return ctx.reply("⛔ فقط مالک یا مدیر اجازه تنظیم گروه فروشگاه را دارد.");
+      }
+
+      if (!["group", "supergroup"].includes(ctx.chat?.type)) {
+        return ctx.reply(
+          "این دستور را داخل همان گروه رول که می‌خواهی به فروشگاه وصل شود بفرست."
+        );
+      }
+
+      const market = ctx.match[1];
+      const storeName = mmText(ctx.match[2]);
+      const store = mmFindStore(market, storeName);
+
+      if (!store) {
+        return ctx.reply("فروشگاه فعال با این نام پیدا نشد.");
+      }
+
+      const other = mm.prepare(`
+        SELECT market, name FROM shop_stores
+        WHERE chat_id = ? AND store_id <> ?
+        LIMIT 1
+      `).get(String(ctx.chat.id), store.store_id);
+
+      if (other) {
+        return ctx.reply(
+          `⛔ این گروه قبلاً به فروشگاه «${other.name}» از ${other.market} وصل شده است.`
+        );
+      }
+
+      try {
+        mm.prepare(
+          "UPDATE shop_stores SET chat_id=? WHERE store_id=?"
+        ).run(String(ctx.chat.id), store.store_id);
+
+        return ctx.reply(
+          `✅ گروه رول با موفقیت به فروشگاه «${storeName}» وصل شد.\n` +
+          `شناسه گروه: ${ctx.chat.id}\n` +
+          "از این پس خرید این فروشگاه فقط در همین گروه مجاز است."
+        );
+      } catch (e) {
+        console.error("Store chat binding error:", e);
+        return ctx.reply("❌ اتصال گروه به فروشگاه انجام نشد.");
+      }
+    }
+  );
+
+  bot.hears(
+    /^حذف اتصال گپ فروشگاه\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*(.+)$/u,
+    async ctx => {
+      if (!mmManage(ctx)) {
+        return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+      }
+
+      const store = mmFindStore(ctx.match[1], mmText(ctx.match[2]));
+      if (!store) return ctx.reply("فروشگاه فعال پیدا نشد.");
+      if (!store.chat_id) {
+        return ctx.reply("برای این فروشگاه هنوز گروهی تنظیم نشده است.");
+      }
+
+      mm.prepare(
+        "UPDATE shop_stores SET chat_id=NULL WHERE store_id=?"
+      ).run(store.store_id);
+
+      return ctx.reply(
+        `✅ اتصال گروه از فروشگاه «${store.name}» برداشته شد.\n` +
+        "تا تنظیم گروه جدید، خرید این فروشگاه غیرفعال خواهد بود."
+      );
+    }
+  );
+
+  bot.hears(/^وضعیت گپ فروشگاه‌ها$/u, async ctx => {
+    if (!mmManage(ctx)) {
+      return ctx.reply("⛔ فقط مالک یا مدیر اجازه مشاهده این فهرست را دارد.");
+    }
+
+    const rows = mm.prepare(`
+      SELECT market, name, chat_id
+      FROM shop_stores
+      WHERE active=1
+      ORDER BY market, name
+    `).all();
+
+    return ctx.reply(
+      "༺ وضعیت گروه‌های فروشگاه‌ها ༻\n\n" +
+      (rows.length
+        ? rows.map(x =>
+            `🏪 ${x.name} — ${x.market}\n` +
+            `گروه: ${x.chat_id || "تنظیم نشده"}`
+          ).join("\n\n")
+        : "فروشگاه فعالی ثبت نشده است.")
+    );
+  });
 
   // MONTADORIA HIDDEN MARKETS V1
 
@@ -3235,7 +3366,7 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
     if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
 
     const result = mm.prepare(`
-      UPDATE shop_stores SET active=0
+      UPDATE shop_stores SET active=0, chat_id=NULL
       WHERE market=? AND name=? AND active=1
     `).run(ctx.match[1], mmText(ctx.match[2]));
 
@@ -3353,6 +3484,9 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
     if (!item || !item.active || !item.store_active) {
       return ctx.reply("کالای فعالی پیدا نشد.");
     }
+
+    const purchaseChatError = mmStorePurchaseError(ctx, item);
+    if (purchaseChatError) return ctx.reply(purchaseChatError);
 
     const user = getUser(ctx.from.id);
     if (!user) return ctx.reply("حساب شخصیت پیدا نشد؛ ابتدا ثبت‌نام کن.");
@@ -3600,6 +3734,42 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
 
     if (!item) {
       return ctx.reply("❌ این کالا در فروشگاه نیست. برای دیدن کالاها بنویس: فروشگاه");
+    }
+
+    const store = item.store_id
+      ? db.prepare(`
+          SELECT store_id, name, market, chat_id, active
+          FROM shop_stores
+          WHERE store_id=?
+        `).get(item.store_id)
+      : null;
+
+    if (!store || !store.active) {
+      return ctx.reply(
+        "⛔ این کالا به فروشگاه فعالی متصل نیست؛ خرید مستقیم آن غیرفعال است."
+      );
+    }
+
+    if (store.market === "بازار سیاه") {
+      return ctx.reply(
+        "برای خرید از بازار سیاه از قالب کامل خرید فروشگاه استفاده کن:\n" +
+        "خرید | بازار سیاه | نام فروشگاه | نام کالا | تعداد"
+      );
+    }
+
+    if (!store.chat_id) {
+      return ctx.reply(
+        `⛔ گروه رول فروشگاه «${store.name}» هنوز تنظیم نشده است.`
+      );
+    }
+
+    if (
+      !["group", "supergroup"].includes(ctx.chat?.type) ||
+      String(ctx.chat?.id) !== String(store.chat_id)
+    ) {
+      return ctx.reply(
+        `⛔ خرید از فروشگاه «${store.name}» فقط در گروه رول اختصاصی آن مجاز است.`
+      );
     }
 
     if (!quantity || quantity < 1 || quantity > 100000) {
