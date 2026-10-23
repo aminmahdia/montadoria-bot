@@ -816,38 +816,102 @@ export function registerObserver(bot) {
     if (!String(e.message).includes("duplicate column")) throw e;
   }
 
+  const foodTimestampToUnix = value => {
+    if (value === null || value === undefined || value === "") return 0;
+
+    const raw = String(value).trim();
+
+    if (/^[+-]?\d+(?:\.\d+)?$/.test(raw)) {
+      const numeric = Number(raw);
+      if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+      return Math.floor(numeric > 1e12 ? numeric / 1000 : numeric);
+    }
+
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
+  };
+
+  let foodReminderCheckRunning = false;
+
   const checkFoodReminders = async () => {
-    const t = now();
-    const people = db.prepare(`
-      SELECT telegram_id, last_food_at
-      FROM observer_needs
-      WHERE last_food_at > 0
-        AND ? - last_food_at >= 28800
-        AND (last_food_warning_at IS NULL OR last_food_warning_at < last_food_at)
-    `).all(t);
+    if (foodReminderCheckRunning) return;
+    foodReminderCheckRunning = true;
 
-    for (const person of people) {
-      try {
-        await bot.api.sendMessage(
-          Number(person.telegram_id),
-          "🍽️ یادآوری مونتادوریا\n\nمدت زیادی از آخرین غذایت گذشته است. پس از ورود به مپ با #ورود، برای ثبت غذا از #خوردن استفاده کن."
+    try {
+      const currentTime = Math.floor(Date.now() / 1000);
+
+      const people = db.prepare(`
+        SELECT
+          n.telegram_id,
+          n.last_food_at,
+          n.last_food_warning_at,
+          m.chat_id
+        FROM observer_needs n
+        INNER JOIN observer_active_map m
+          ON m.telegram_id = n.telegram_id
+        WHERE n.last_food_at IS NOT NULL
+      `).all();
+
+      for (const person of people) {
+        const telegramId = Number(person.telegram_id);
+        const chatId = Number(person.chat_id);
+        const lastFoodAt = foodTimestampToUnix(person.last_food_at);
+        const lastWarningAt = foodTimestampToUnix(
+          person.last_food_warning_at
         );
-        db.prepare(`
-          UPDATE observer_needs
-          SET last_food_warning_at = ?, updated_at = ?
-          WHERE telegram_id = ?
-        `).run(t, t, person.telegram_id);
 
-        await report(bot.api, `🍽️ هشدار گرسنگی ارسال شد | شناسه: ${person.telegram_id}`);
-      } catch (e) {
-        console.error("خطا در هشدار گرسنگی:", e);
+        // هشدار اول: ۸ ساعت پس از آخرین غذای ثبت‌شده
+        if (!lastFoodAt || currentTime - lastFoodAt < 8 * 3600) {
+          continue;
+        }
+
+        // هشدارهای بعدی: هر ۴ ساعت
+        if (
+          lastWarningAt > 0 &&
+          currentTime - lastWarningAt < 4 * 3600
+        ) {
+          continue;
+        }
+
+        try {
+          await bot.api.sendMessage(
+            chatId,
+            "🍽️ <b>یادآوری غذا</b>\n\n" +
+            `شناسه کاربر: <code>${telegramId}</code>\n` +
+            "مدت زیادی از آخرین غذای این شخصیت گذشته است.\n" +
+            "برای ثبت غذا، در همین گروه از <code>#خوردن</code> استفاده کن.",
+            { parse_mode: "HTML" }
+          );
+
+          db.prepare(`
+            UPDATE observer_needs
+            SET last_food_warning_at = ?, updated_at = ?
+            WHERE telegram_id = ?
+          `).run(currentTime, currentTime, telegramId);
+
+          await report(
+            bot.api,
+            `🍽️ هشدار غذا ارسال شد | شناسه: ${telegramId} | گروه: ${chatId}`
+          );
+        } catch (error) {
+          console.error(
+            "ارسال یادآوری غذا ناموفق بود:",
+            telegramId,
+            chatId,
+            error.message || error
+          );
+        }
       }
+    } finally {
+      foodReminderCheckRunning = false;
     }
   };
 
+  // بررسی هر ۱۰ دقیقه؛ خود هشدارها با فاصله چندساعته ارسال می‌شوند.
   const foodReminderTimer = setInterval(() => {
     checkFoodReminders().catch(console.error);
-  }, 60000);
+  }, 10 * 60 * 1000);
+
   foodReminderTimer.unref?.();
   checkFoodReminders().catch(console.error);
   // END MONTADORIA_FOOD_REMINDER_V1
