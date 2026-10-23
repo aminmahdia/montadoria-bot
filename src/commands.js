@@ -523,6 +523,312 @@ export function registerCommands(bot) {
     }
   });
 
+  // MONTADORIA_PLACE_MAP_CATALOG_V1
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS montadoria_place_maps (
+      map_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      location_chat_id TEXT NOT NULL,
+      map_name TEXT NOT NULL COLLATE NOCASE,
+      target_chat_id TEXT NOT NULL UNIQUE,
+      target_title TEXT NOT NULL DEFAULT '',
+      photo_file_id TEXT NOT NULL,
+      invite_link TEXT NOT NULL,
+      required_job TEXT NOT NULL DEFAULT '',
+      required_license TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(location_chat_id, map_name)
+    )
+  `);
+
+  const mpText = value => String(value ?? "").trim();
+  const mpNow = () => Math.floor(Date.now() / 1000);
+  const mpManage = ctx => isModeratorOrOwner(getUser(ctx.from?.id));
+
+  const mpDeleteLater = (ctx, message) => {
+    if (!message?.chat?.id || !message?.message_id) return;
+    const api = ctx.api;
+    const timer = setTimeout(() => {
+      api.deleteMessage(message.chat.id, message.message_id).catch(() => {});
+    }, 60_000);
+    timer.unref?.();
+  };
+
+  const mpReply = async (ctx, text, extra = {}) => {
+    const sent = await ctx.reply(text, extra);
+    mpDeleteLater(ctx, sent);
+    return sent;
+  };
+
+  const mpLicenseExists = code => {
+    if (!code) return true;
+    try {
+      return Boolean(db.prepare(`
+        SELECT 1 FROM black_market_license_types
+        WHERE code=? AND active=1
+      `).get(code));
+    } catch {
+      return false;
+    }
+  };
+
+  const mpCanEnterUser = (telegramId, map) => {
+    const requiredJob = mpText(map.required_job);
+    const requiredLicense = mpText(map.required_license);
+    if (!requiredJob && !requiredLicense) return true;
+
+    const user = getUser(Number(telegramId));
+    if (!user) return false;
+    if (isModeratorOrOwner(user)) return true;
+    if (requiredJob && mpText(user.job) !== requiredJob) return false;
+
+    if (requiredLicense) {
+      try {
+        const ownsLicense = db.prepare(`
+          SELECT 1 FROM black_market_user_licenses
+          WHERE telegram_id=? AND license_code=? AND active=1
+        `).get(String(telegramId), requiredLicense);
+        const activeLicense = db.prepare(`
+          SELECT 1 FROM black_market_license_types
+          WHERE code=? AND active=1
+        `).get(requiredLicense);
+        if (!ownsLicense || !activeLicense) return false;
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // ثبت مپ: عکس باید همراه این کپشن، داخل گروه اصلی همان مکان ارسال شود.
+  bot.on("message:photo", async ctx => {
+    const caption = mpText(ctx.message.caption);
+    if (!/^ثبت مپ(?:\s*\||$)/u.test(caption)) return;
+    if (!mpManage(ctx)) {
+      await mpReply(ctx, "⛔ فقط مالک یا مدیر می‌تواند مپ ثبت کند.");
+      return;
+    }
+    if (!ctx.chat || !["group", "supergroup"].includes(ctx.chat.type)) {
+      await mpReply(ctx, "این عکس را همراه دستور ثبت مپ، داخل گروه اصلی همان مکان بفرست.");
+      return;
+    }
+
+    const match = caption.match(/^ثبت مپ\s*\|\s*([^|]+)\s*\|\s*(-?\d+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u);
+    if (!match) {
+      await mpReply(ctx,
+        "قالب ثبت مپ درست نیست.\n\n" +
+        "عکس را با این کپشن ارسال کن:\n" +
+        "ثبت مپ | نام مپ | شناسه گروه مقصد | شغل یا - | کد مجوز یا -\n\n" +
+        "برای مپ آزاد، دو شرط آخر را - بگذار.");
+      return;
+    }
+
+    const mapName = mpText(match[1]);
+    const targetChatId = mpText(match[2]);
+    const rawJob = mpText(match[3]);
+    const rawLicense = mpText(match[4]);
+    const requiredJob = rawJob === "-" ? "" : rawJob;
+    const requiredLicense = rawLicense === "-" ? "" : rawLicense;
+    const photoFileId = ctx.message.photo.at(-1)?.file_id;
+
+    if (!mapName || mapName.length > 80 || !photoFileId) {
+      await mpReply(ctx, "نام مپ یا عکس معتبر نیست.");
+      return;
+    }
+    if (requiredLicense && !mpLicenseExists(requiredLicense)) {
+      await mpReply(ctx, "⛔ کد مجوز فعال پیدا نشد. ابتدا مجوز را تعریف کن یا - بگذار.");
+      return;
+    }
+
+    let targetInfo;
+    let invite;
+    try {
+      targetInfo = await ctx.api.getChat(targetChatId);
+      if (!["group", "supergroup"].includes(targetInfo.type)) {
+        await mpReply(ctx, "شناسه مقصد باید متعلق به یک گروه یا سوپرگروه تلگرام باشد.");
+        return;
+      }
+      if ((requiredJob || requiredLicense) && targetInfo.username) {
+        await mpReply(ctx,
+          "⛔ این مپ شرط دسترسی دارد؛ گروه مقصد باید خصوصی باشد تا ورود با لینک عمومی دور زده نشود.");
+        return;
+      }
+      const duplicateName = db.prepare(`
+        SELECT 1 FROM montadoria_place_maps
+        WHERE location_chat_id=? AND map_name=? COLLATE NOCASE
+      `).get(String(ctx.chat.id), mapName);
+      if (duplicateName) {
+        await mpReply(ctx, "مپ دیگری با همین نام در این مکان ثبت شده است.");
+        return;
+      }
+      const duplicateTarget = db.prepare(`
+        SELECT 1 FROM montadoria_place_maps WHERE target_chat_id=?
+      `).get(targetChatId);
+      if (duplicateTarget) {
+        await mpReply(ctx, "این گروه مقصد قبلاً به‌عنوان یک مپ ثبت شده است.");
+        return;
+      }
+      invite = await ctx.api.createChatInviteLink(targetChatId, {
+        name: (`MONTADORIA ${mapName}`).slice(0, 32),
+        creates_join_request: true
+      });
+    } catch {
+      await mpReply(ctx,
+        "❌ ساخت لینک مپ انجام نشد. ربات را در گروه مقصد ادمین کن و اجازه دعوت کاربران بده؛ سپس دوباره تلاش کن.");
+      return;
+    }
+
+    try {
+      db.prepare(`
+        INSERT INTO montadoria_place_maps (
+          location_chat_id, map_name, target_chat_id, target_title,
+          photo_file_id, invite_link, required_job, required_license,
+          created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        String(ctx.chat.id), mapName, targetChatId,
+        targetInfo.title || mapName, photoFileId, invite.invite_link,
+        requiredJob, requiredLicense, String(ctx.from.id), mpNow(), mpNow()
+      );
+    } catch {
+      try { await ctx.api.revokeChatInviteLink(targetChatId, invite.invite_link); } catch {}
+      await mpReply(ctx, "❌ ثبت مپ انجام نشد؛ احتمالاً نام یا گروه مقصد تکراری است.");
+      return;
+    }
+
+    await mpReply(ctx,
+      `✅ مپ «${mapName}» ثبت شد.\n` +
+      `📍 مکان: ${ctx.chat.title || "گروه فعلی"}\n` +
+      `🔐 شغل لازم: ${requiredJob || "ندارد"}\n` +
+      `🔑 مجوز لازم: ${requiredLicense || "ندارد"}\n\n` +
+      "برای نمایش فهرست، دستور «مپ‌های این مکان» را بفرست.");
+  });
+
+  // هر عکس مپ و دکمه ورود در پیام جدا نمایش داده می‌شود؛ پیام‌های ربات پس از ۶۰ ثانیه پاک می‌شوند.
+  bot.hears(/^(?:مپ‌های این مکان|مپ های این مکان|مپ‌های اینجا|مپ های اینجا|لیست مپ‌ها|فهرست مپ‌ها)\s*[؟?]?$/u, async ctx => {
+    if (!ctx.chat || !["group", "supergroup"].includes(ctx.chat.type)) {
+      await mpReply(ctx, "این دستور را داخل گروه اصلی همان مکان بفرست.");
+      return;
+    }
+    mpDeleteLater(ctx, ctx.message);
+    const maps = db.prepare(`
+      SELECT * FROM montadoria_place_maps
+      WHERE location_chat_id=?
+      ORDER BY map_id ASC
+    `).all(String(ctx.chat.id)).filter(map => mpCanEnterUser(ctx.from.id, map));
+
+    if (!maps.length) {
+      await mpReply(ctx, "در این مکان مپی برای نمایش یا مپی که دسترسی ورودش را داشته باشی ثبت نشده است.");
+      return;
+    }
+
+    for (const map of maps) {
+      try {
+        const sent = await ctx.replyWithPhoto(map.photo_file_id, {
+          caption: `༺⟡ 𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀 ⟡༻\n\n🗺️ ${map.map_name}\n📍 ${map.target_title || map.map_name}`,
+          reply_markup: {
+            inline_keyboard: [[{ text: `ورود به ${map.map_name}`.slice(0, 60), url: map.invite_link }]]
+          }
+        });
+        mpDeleteLater(ctx, sent);
+      } catch {
+        await mpReply(ctx, `❌ نمایش عکس مپ «${map.map_name}» ناموفق بود.`);
+      }
+    }
+  });
+
+  // تغییر یا برداشتن شروط دسترسی یک مپ.
+  bot.hears(/^تنظیم دسترسی مپ\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
+    if (!mpManage(ctx)) return mpReply(ctx, "⛔ فقط مالک یا مدیر اجازه تغییر دسترسی مپ را دارد.");
+    if (!ctx.chat || !["group", "supergroup"].includes(ctx.chat.type)) {
+      return mpReply(ctx, "این دستور را در گروه اصلی همان مکان بفرست.");
+    }
+    const mapName = mpText(ctx.match[1]);
+    const rawJob = mpText(ctx.match[2]);
+    const rawLicense = mpText(ctx.match[3]);
+    const requiredJob = rawJob === "-" ? "" : rawJob;
+    const requiredLicense = rawLicense === "-" ? "" : rawLicense;
+    const map = db.prepare(`
+      SELECT * FROM montadoria_place_maps
+      WHERE location_chat_id=? AND map_name=? COLLATE NOCASE
+    `).get(String(ctx.chat.id), mapName);
+    if (!map) return mpReply(ctx, "مپ فعالی با این نام در همین مکان پیدا نشد.");
+    if (requiredLicense && !mpLicenseExists(requiredLicense)) {
+      return mpReply(ctx, "کد مجوز فعال پیدا نشد؛ ابتدا مجوز را تعریف کن یا - بگذار.");
+    }
+    if (requiredJob || requiredLicense) {
+      try {
+        const targetInfo = await ctx.api.getChat(map.target_chat_id);
+        if (targetInfo.username) {
+          return mpReply(ctx, "⛔ برای اعمال محدودیت، گروه مقصد باید خصوصی باشد؛ گروه عمومی امکان دور زدن شرط را دارد.");
+        }
+      } catch {
+        return mpReply(ctx, "❌ بررسی گروه مقصد ممکن نشد؛ دسترسی ربات به گروه را بررسی کن.");
+      }
+    }
+    db.prepare(`
+      UPDATE montadoria_place_maps
+      SET required_job=?, required_license=?, updated_at=? WHERE map_id=?
+    `).run(requiredJob, requiredLicense, mpNow(), map.map_id);
+    return mpReply(ctx,
+      `✅ دسترسی مپ «${map.map_name}» تغییر کرد.\n` +
+      `شغل لازم: ${requiredJob || "ندارد"}\n` +
+      `مجوز لازم: ${requiredLicense || "ندارد"}`);
+  });
+
+  // حذف از فهرست و لغو لینک قبلی.
+  bot.hears(/^حذف مپ\s*\|\s*(.+)$/u, async ctx => {
+    if (!mpManage(ctx)) return mpReply(ctx, "⛔ فقط مالک یا مدیر اجازه حذف مپ را دارد.");
+    if (!ctx.chat || !["group", "supergroup"].includes(ctx.chat.type)) {
+      return mpReply(ctx, "این دستور را در گروه اصلی همان مکان بفرست.");
+    }
+    const mapName = mpText(ctx.match[1]);
+    const map = db.prepare(`
+      SELECT * FROM montadoria_place_maps
+      WHERE location_chat_id=? AND map_name=? COLLATE NOCASE
+    `).get(String(ctx.chat.id), mapName);
+    if (!map) return mpReply(ctx, "مپ با این نام در همین مکان پیدا نشد.");
+    try { await ctx.api.revokeChatInviteLink(map.target_chat_id, map.invite_link); } catch {}
+    db.prepare("DELETE FROM montadoria_place_maps WHERE map_id=?").run(map.map_id);
+    return mpReply(ctx, `✅ مپ «${map.map_name}» از فهرست حذف شد و لینک قبلی آن لغو شد.`);
+  });
+
+  // تأیید ورود بر اساس شغل و مجوز؛ گروه مقصدِ محدودشده باید خصوصی باشد.
+  bot.on("chat_join_request", async ctx => {
+    const request = ctx.chatJoinRequest;
+    if (!request?.chat?.id || !request?.from?.id) return;
+    const map = db.prepare(`
+      SELECT * FROM montadoria_place_maps
+      WHERE target_chat_id=?
+      LIMIT 1
+    `).get(String(request.chat.id));
+    if (!map) return;
+
+    const allowed = mpCanEnterUser(request.from.id, map);
+    try {
+      if (allowed) {
+        await ctx.api.approveChatJoinRequest(request.chat.id, request.from.id);
+      } else {
+        await ctx.api.declineChatJoinRequest(request.chat.id, request.from.id);
+        const required = [
+          map.required_job ? `شغل: ${map.required_job}` : "",
+          map.required_license ? `مجوز: ${map.required_license}` : ""
+        ].filter(Boolean).join(" | ");
+        try {
+          await ctx.api.sendMessage(
+            request.user_chat_id || request.from.id,
+            `درخواست ورود شما به مپ «${map.map_name}» پذیرفته نشد.\nشرط دسترسی: ${required || "نامشخص"}`
+          );
+        } catch {}
+      }
+    } catch (error) {
+      console.error("MONTADORIA map join request error:", error);
+    }
+  });
+  // END MONTADORIA_PLACE_MAP_CATALOG_V1
+
+
   bot.command("start", async (ctx) => {
     const telegramId = ctx.from.id
     const username = ctx.from.username ?? null
