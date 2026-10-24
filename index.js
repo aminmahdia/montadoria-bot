@@ -1,5 +1,6 @@
 import { Bot, API_CONSTANTS } from "grammy"
 import { registerCommands } from "./src/commands.js"
+import { registerSetNames } from "./src/setnames.js"
 import { registerObserver } from "./src/observer.js"
 import { registerRegistrations } from "./src/registrations.js"
 
@@ -12,6 +13,7 @@ if (!token) {
 
 const bot = new Bot(token)
 
+registerSetNames(bot)
 registerCommands(bot)
 registerObserver(bot)
 registerRegistrations(bot)
