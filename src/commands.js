@@ -926,13 +926,9 @@ export function registerCommands(bot) {
 
     // MONTADORIA_ROYAL_PROFILE_V2
     const profileText = [
-      "╔═══⟡༺𓃦༻⟡═══╗",
-      "\u00A0\u00A0\u00A0\u00A0𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀",
-      "╚═══⟡༺𓃦༻⟡═══╝",
-      "༺⟡━━━━━━━━━━━━━━━━━━━━⟡༻",
-      "",
-      "       ❖ بایگانی رسمی شهروند ❖",
-      "━━━━━━━━━━━━━━━━━━━━",
+      "𝐑𝐎𝐘𝐀𝐋 𝐀𝐑𝐂𝐇𝐈𝐕𝐄𝐒",
+      "❖ بایگانی رسمی شهروند ❖",
+      "──── ⟡ ────",
       "",
       "Ⅰ · مشخصات هویتی حساب",
       "",
@@ -950,9 +946,9 @@ export function registerCommands(bot) {
       `⚒ حرفه: ${user.job ?? "بدون شغل"}`,
       `♜ جایگاه اجتماعی: ${ROLES[user.role] ?? user.role}`,
       "",
-      "╭────────── ⟡ ──────────╮",
-      "      𓃦  𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀  𓃦",
-      "╰────────── ⟡ ──────────╯"
+      "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0╭───────⟡───────╮",
+      "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀",
+      "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0╰───────⟡───────╯",
     ].join("\n")
 
   const registration = db.prepare(`
@@ -965,7 +961,7 @@ export function registerCommands(bot) {
 
   const registrationText = registration
     ? [
-        "╭────── ⟡ پروندهٔ نقش‌آفرینی ⟡ ──────╮",
+        "⟡ پروندهٔ نقش‌آفرینی ⟡",
         "",
         `🎭 نام شخصیت: ${registration.character_name || "ثبت نشده"}`,
         `🔐 کد اختصاصی: ${registration.registration_code || "ثبت نشده"}`,
@@ -976,19 +972,18 @@ export function registerCommands(bot) {
         `♜ مادر: ${registration.mother_username ? "@" + registration.mother_username : "در بایگانی ثبت نشده"}`,
         `♜ پدر: ${registration.father_username ? "@" + registration.father_username : "در بایگانی ثبت نشده"}`,
         "",
-        "╰──────────────────────────────╯"
+        "╰──────⟡──────╯"
       ].join("\n")
     : [
-        "╭────── ⟡ پروندهٔ نقش‌آفرینی ⟡ ──────╮",
+        "⟡ پروندهٔ نقش‌آفرینی ⟡",
         "",
         "برای این حساب، شناسنامهٔ نقش‌آفرینی در بایگانی پیدا نشد.",
         "",
-        "╰──────────────────────────────╯"
+        "╰──────⟡──────╯"
       ].join("\n");
 
   const fullProfileText =
-    `${profileText}\n\n${registrationText}\n\n` +
-    "༺⟡━━━━━━━━━━━━━━━━━━━━⟡༻";
+    `${profileText}\n\n${registrationText}`;
 
   if (registration?.photo_file_id) {
     await ctx.replyWithPhoto(registration.photo_file_id, {
