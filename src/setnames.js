@@ -480,6 +480,48 @@ async function ownerSetFamily(ctx, rawArgs) {
   );
 }
 
+
+async function ownerRemoveCategory(ctx, rawArgs) {
+  if (!isOwner(ctx)) {
+    await ctx.reply("⛔ فقط مالک مونتادوریا اجازهٔ عزل از جایگاه را دارد.");
+    return;
+  }
+
+  const parsed = parseOwnerArgs(ctx, rawArgs);
+  if (parsed.error) {
+    await ctx.reply(parsed.error);
+    return;
+  }
+
+  ensureRecord(parsed.targetId);
+
+  // جایگاه به عضو عادی برمی‌گردد؛ نشان خاندان تغییر نمی‌کند.
+  db.prepare(`
+    UPDATE montadoria_setnames
+    SET category_override = 'member', updated_at = ?
+    WHERE telegram_id = ?
+  `).run(timestamp(), parsed.targetId);
+
+  const data = getTagData(parsed.targetId);
+  const tag = formatTag(parsed.targetId);
+
+  if (tag) {
+    db.prepare(`
+      UPDATE montadoria_setnames
+      SET last_notified_tag = ?, updated_at = ?
+      WHERE telegram_id = ?
+    `).run(tag, timestamp(), parsed.targetId);
+  }
+
+  await ctx.reply(
+    `✅ عزل از جایگاه انجام شد.\n` +
+    `شناسه کاربر: ${parsed.targetId}\n` +
+    `جایگاه جدید: عضو عادی ⌬\n` +
+    `نشان خاندان حفظ شد: ${data.family.symbol || "بدون خاندان"}\n\n` +
+    (tag ? `ست‌اسم جدید:\n${tag}` : "نام لاتین ثبت نشده است.")
+  );
+}
+
 export function registerSetNames(bot) {
   bot.use(async (ctx, next) => {
     const message = ctx.message;
@@ -613,6 +655,13 @@ export function registerSetNames(bot) {
     /^(?:\/?ست[‌_\s-]*(?:خاندان|خانواده))(?:@\w+)?(?:\s+(.+))?$/iu,
     async (ctx) => {
       await ownerSetFamily(ctx, ctx.match[1] || "");
+    }
+  );
+
+  bot.hears(
+    /^(?:\/?عزل[‌_\s-]*(?:جایگاه|رتبه))(?:@\w+)?(?:\s+(.+))?$/iu,
+    async (ctx) => {
+      await ownerRemoveCategory(ctx, ctx.match[1] || "");
     }
   );
 }
