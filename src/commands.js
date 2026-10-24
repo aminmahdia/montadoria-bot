@@ -670,7 +670,7 @@ export function registerCommands(bot) {
         return;
       }
       invite = await ctx.api.createChatInviteLink(targetChatId, {
-        name: (`MONTADORIA ${mapName}`).slice(0, 32),
+        name: "Montadoria Map",
         ...(requiredJob || requiredLicense ? { creates_join_request: true } : {})
       });
     } catch (error) {
