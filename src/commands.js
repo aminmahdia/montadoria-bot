@@ -927,7 +927,7 @@ export function registerCommands(bot) {
     // MONTADORIA_ROYAL_PROFILE_V2
     const profileText = [
       "╔═══⟡༺𓃦༻⟡═══╗",
-      "\u00A0\u00A0𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀\u00A0\u00A0",
+      "\u00A0\u00A0\u00A0\u00A0𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀",
       "╚═══⟡༺𓃦༻⟡═══╝",
       "༺⟡━━━━━━━━━━━━━━━━━━━━⟡༻",
       "",
