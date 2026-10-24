@@ -926,7 +926,11 @@ export function registerCommands(bot) {
 
     // MONTADORIA_ROYAL_PROFILE_V2
     const profileText = [
-      "𝐑𝐎𝐘𝐀𝐋 𝐀𝐑𝐂𝐇𝐈𝐕𝐄𝐒",
+      "༺⟡━━━━━━━━━━━━━━━━━━━━⟡༻",
+      "       𝕸𝕺𝕹𝕿𝕬𝕯𝕺𝕽𝕴𝕬",
+      "𝆹𝅥 𝆭 𝆺𝅥‌ 𝐑𝐎𝐘𝐀𝐋 𝐀𝐑𝐂𝐇𝐈𝐕𝐄𝐒 𝆹𝅥 𝆭 𝆺𝅥‌",
+      "༺⟡━━━━━━━━━━━━━━━━━━━━⟡༻",
+      "",
       "❖ بایگانی رسمی شهروند ❖",
       "──── ⟡ ────",
       "",
@@ -946,9 +950,9 @@ export function registerCommands(bot) {
       `⚒ حرفه: ${user.job ?? "بدون شغل"}`,
       `♜ جایگاه اجتماعی: ${ROLES[user.role] ?? user.role}`,
       "",
-      "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0╭───────⟡───────╮",
-      "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀",
-      "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0╰───────⟡───────╯",
+      "╔═══⟡༺𓃦༻⟡═══╗",
+      "\u00A0\u00A0\u00A0\u00A0𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀\u00A0\u00A0\u00A0\u00A0",
+      "╚═══⟡༺𓃦༻⟡═══╝",
     ].join("\n")
 
   const registration = db.prepare(`
