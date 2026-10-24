@@ -32,6 +32,15 @@ db.exec(`
     prompt_message_id INTEGER,
     expires_at INTEGER NOT NULL
   );
+
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS montadoria_position_dismissers (
+    telegram_id INTEGER PRIMARY KEY,
+    added_by INTEGER NOT NULL,
+    added_at INTEGER NOT NULL
+  )
 `);
 
 function timestamp() {
@@ -481,9 +490,90 @@ async function ownerSetFamily(ctx, rawArgs) {
 }
 
 
-async function ownerRemoveCategory(ctx, rawArgs) {
+
+function canDismissPosition(ctx) {
+  if (isOwner(ctx)) return true;
+
+  const telegramId = Number(ctx.from?.id || 0);
+  if (!Number.isSafeInteger(telegramId) || telegramId <= 0) return false;
+
+  return Boolean(
+    db.prepare(
+      "SELECT 1 FROM montadoria_position_dismissers WHERE telegram_id = ?"
+    ).get(telegramId)
+  );
+}
+
+async function managePositionDismissers(ctx, action, rawArgs = "") {
   if (!isOwner(ctx)) {
-    await ctx.reply("⛔ فقط مالک مونتادوریا اجازهٔ عزل از جایگاه را دارد.");
+    await ctx.reply("⛔ فقط مالک اصلی اجازه مدیریت عزل‌کننده‌ها را دارد.");
+    return;
+  }
+
+  if (action === "list") {
+    const rows = db.prepare(
+      "SELECT telegram_id FROM montadoria_position_dismissers ORDER BY added_at"
+    ).all();
+
+    await ctx.reply(
+      rows.length
+        ? "⟡ فهرست عزل‌کننده‌های مجاز ⟡\n" +
+          rows.map((row, i) => `${i + 1}. ${row.telegram_id}`).join("\n")
+        : "⟡ هنوز هیچ عزل‌کننده‌ای ثبت نشده است."
+    );
+    return;
+  }
+
+  const value = String(rawArgs).trim();
+  if (!/^\d{5,20}$/.test(value)) {
+    await ctx.reply(
+      "❌ شناسه عددی تلگرام را وارد کن.\n" +
+      "نمونه: افزودن عزل‌کننده 123456789"
+    );
+    return;
+  }
+
+  const targetId = Number(value);
+
+  if (!Number.isSafeInteger(targetId) || targetId <= 0) {
+    await ctx.reply("❌ شناسه واردشده معتبر نیست.");
+    return;
+  }
+
+  if (targetId === OWNER_ID) {
+    await ctx.reply("ℹ️ مالک اصلی از قبل اجازه عزل جایگاه را دارد.");
+    return;
+  }
+
+  if (action === "add") {
+    const result = db.prepare(`
+      INSERT OR IGNORE INTO montadoria_position_dismissers
+        (telegram_id, added_by, added_at)
+      VALUES (?, ?, ?)
+    `).run(targetId, Number(ctx.from.id), Date.now());
+
+    await ctx.reply(
+      result.changes
+        ? `✅ شناسه ${targetId} مجاز به عزل جایگاه شد.`
+        : `ℹ️ شناسه ${targetId} از قبل مجاز است.`
+    );
+    return;
+  }
+
+  const result = db.prepare(
+    "DELETE FROM montadoria_position_dismissers WHERE telegram_id = ?"
+  ).run(targetId);
+
+  await ctx.reply(
+    result.changes
+      ? `✅ دسترسی عزل جایگاه برای شناسه ${targetId} لغو شد.`
+      : `ℹ️ شناسه ${targetId} در فهرست عزل‌کننده‌ها نبود.`
+  );
+}
+
+async function ownerRemoveCategory(ctx, rawArgs) {
+  if (!canDismissPosition(ctx)) {
+    await ctx.reply("⛔ فقط مالک یا عزل‌کنندهٔ مجاز اجازه عزل جایگاه را دارد.");
     return;
   }
 
@@ -662,6 +752,28 @@ export function registerSetNames(bot) {
     /^(?:\/?عزل[‌_\s-]*(?:جایگاه|رتبه))(?:@\w+)?(?:\s+(.+))?$/iu,
     async (ctx) => {
       await ownerRemoveCategory(ctx, ctx.match[1] || "");
+    }
+  );
+
+
+  bot.hears(
+    /^(?:\/?(?:افزودن|اضافه\s*کردن))\s+عزل[‌\s_-]*کننده\s+(\d{5,20})$/iu,
+    async (ctx) => {
+      await managePositionDismissers(ctx, "add", ctx.match[1] || "");
+    }
+  );
+
+  bot.hears(
+    /^(?:\/?حذف)\s+عزل[‌\s_-]*کننده\s+(\d{5,20})$/iu,
+    async (ctx) => {
+      await managePositionDismissers(ctx, "remove", ctx.match[1] || "");
+    }
+  );
+
+  bot.hears(
+    /^(?:\/?لیست)\s+عزل[‌\s_-]*کننده(?:[‌\s_-]*ها)?$/iu,
+    async (ctx) => {
+      await managePositionDismissers(ctx, "list");
     }
   );
 }
