@@ -671,11 +671,13 @@ export function registerCommands(bot) {
       }
       invite = await ctx.api.createChatInviteLink(targetChatId, {
         name: (`MONTADORIA ${mapName}`).slice(0, 32),
-        creates_join_request: true
+        ...(requiredJob || requiredLicense ? { creates_join_request: true } : {})
       });
-    } catch {
+    } catch (error) {
+      console.error("MONTADORIA map invite creation failed:", error);
+      const detail = String(error?.description || error?.message || error).slice(0, 220);
       await mpReply(ctx,
-        "❌ ساخت لینک مپ انجام نشد. ربات را در گروه مقصد ادمین کن و اجازه دعوت کاربران بده؛ سپس دوباره تلاش کن.");
+        `❌ ساخت لینک مپ انجام نشد.\\nجزئیات خطا: ${detail}`);
       return;
     }
 
