@@ -914,10 +914,52 @@ export function registerCommands(bot) {
     )
   })
 
+  // MONTADORIA_PROFILE_TARGET_V1
   const showOwnProfile = async (ctx) => {
-    syncOwner(ctx.from.id)
+    syncOwner(ctx.from.id);
 
-    const user = getUser(ctx.from.id)
+    const messageText = String(ctx.message?.text || "").trim();
+    const usernameMatch = messageText.match(
+      /^(?:\/profile(?:@\w+)?|\/?(?:پروفایل|رول)(?:@\w+)?)(?:\s+@?([A-Za-z][A-Za-z0-9_]{4,31}))?$/iu
+    );
+    const targetUsername = usernameMatch?.[1] || null;
+    const replyFrom = ctx.message?.reply_to_message?.from || null;
+    const targetRequested = Boolean(targetUsername || replyFrom?.id);
+
+    let user = null;
+
+    if (targetUsername) {
+      user = db.prepare(`
+        SELECT telegram_id, username, display_name,
+               money, infinite_money, bank, xp, level, role, job, card_number
+        FROM users
+        WHERE username = ? COLLATE NOCASE
+        LIMIT 1
+      `).get(targetUsername);
+    } else if (replyFrom?.id) {
+      user = getUser(replyFrom.id);
+
+      if (!user && replyFrom.username) {
+        user = db.prepare(`
+          SELECT telegram_id, username, display_name,
+                 money, infinite_money, bank, xp, level, role, job, card_number
+          FROM users
+          WHERE username = ? COLLATE NOCASE
+          LIMIT 1
+        `).get(replyFrom.username);
+      }
+    } else {
+      user = getUser(ctx.from.id);
+    }
+
+    if (!user) {
+      await ctx.reply(
+        targetRequested
+          ? "❌ حساب این کاربر در کاربران ثبت‌شدهٔ مونتادوریا پیدا نشد. ممکن است هنوز /start را نزده باشد."
+          : "ابتدا /start را بزنید."
+      );
+      return;
+    }
 
     if (!user) {
       await ctx.reply("ابتدا /start را بزنید.")
@@ -961,7 +1003,11 @@ export function registerCommands(bot) {
            family_name, mother_username, father_username
     FROM character_registrations
     WHERE telegram_username = ? COLLATE NOCASE
-  `).get((ctx.from.username || user.username || "").replace(/^@/, ""))
+  `).get(
+    ((targetRequested
+      ? (user.username || replyFrom?.username || targetUsername)
+      : (ctx.from.username || user.username)) || "").replace(/^@/, "")
+  )
 
   const registrationText = registration
     ? [
@@ -999,7 +1045,10 @@ export function registerCommands(bot) {
   };
 
   bot.command("profile", showOwnProfile);
-  bot.hears(/^(?:\/)?(?:رول|پروفایل)(?:@\w+)?$/u, showOwnProfile);
+  bot.hears(
+    /^(?:\/)?(?:رول|پروفایل)(?:@\w+)?(?:\s+@?[A-Za-z][A-Za-z0-9_]{4,31})?$/u,
+    showOwnProfile
+  );
 
 
 
