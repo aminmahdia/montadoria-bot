@@ -460,6 +460,663 @@ async function showOwnerPanel(ctx) {
 
 export function registerCommands(bot) {
 
+  // MONTADORIA_REGISTRY_THRESHOLD_V2
+  const REGISTRY_TRADE_LIMIT = 10000;
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS montadoria_registry_office (
+      slot INTEGER PRIMARY KEY CHECK(slot = 1),
+      owner_id TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS montadoria_registry_trade_requests (
+      request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      requester_id TEXT NOT NULL,
+      target_id TEXT,
+      action TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      command_text TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      rejection_reason TEXT,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      reviewed_by TEXT,
+      reviewed_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_registry_trade_requests_status
+    ON montadoria_registry_trade_requests(status, expires_at);
+
+    CREATE INDEX IF NOT EXISTS idx_registry_trade_requests_sender
+    ON montadoria_registry_trade_requests(requester_id, command_text, status);
+  `);
+
+  const rtNow = () => Math.floor(Date.now() / 1000);
+
+  const rtOwnerId = () => {
+    const row = db.prepare(
+      "SELECT owner_id FROM montadoria_registry_office WHERE slot = 1"
+    ).get();
+    return row?.owner_id ? String(row.owner_id) : null;
+  };
+
+  const rtIsBotOwner = ctx => {
+    const id = String(ctx.from?.id ?? "");
+    const user = ctx.from?.id ? getUser(ctx.from.id) : null;
+    return (OWNER_ID > 0 && id === String(OWNER_ID)) || Boolean(isOwner(user));
+  };
+
+  const rtDigits = value => {
+    const map = {
+      "۰":"0","۱":"1","۲":"2","۳":"3","۴":"4",
+      "۵":"5","۶":"6","۷":"7","۸":"8","۹":"9",
+      "٠":"0","١":"1","٢":"2","٣":"3","٤":"4",
+      "٥":"5","٦":"6","٧":"7","٨":"8","٩":"9"
+    };
+    return String(value ?? "").replace(/[۰-۹٠-٩]/g, c => map[c] ?? c);
+  };
+
+  const rtAmount = value => {
+    const n = Number(rtDigits(value).replace(/[,\u066C٬\s]/g, ""));
+    return Number.isSafeInteger(n) && n > 0 ? n : null;
+  };
+
+  const rtNorm = value => String(value ?? "").trim().replace(/\s+/g, " ");
+
+  const rtSend = async (id, text) => {
+    if (!id) return false;
+    try {
+      await bot.api.sendMessage(Number(id), text);
+      return true;
+    } catch (error) {
+      console.error("Registry notification failed:", error?.message || error);
+      return false;
+    }
+  };
+
+  // برآورد مبلغ معامله از قیمت فعلی پایگاه داده انجام می‌شود.
+  // اگر دستور یا دارایی معتبر نباشد، این بخش دخالت نمی‌کند.
+  const rtAnalyze = (ctx, rawText) => {
+    const text = rtNorm(rawText);
+    const actorId = String(ctx.from.id);
+    const parts = text.split("|").map(x => x.trim());
+    const actionKey = String(parts[0] || "")
+      .replace(/[\s\u200c\u200d_-]/g, "")
+      .toLowerCase();
+
+    const assetActions = new Map([
+      ["خریدخودرو", "buy_car"],
+      ["فروشخودرو", "sell_car"],
+      ["انتقالخودرو", "transfer_car"],
+      ["خریدملک", "buy_property"],
+      ["فروشملک", "sell_property"],
+      ["انتقالملک", "transfer_property"],
+      ["خریدکسبوکار", "buy_business"],
+      ["فروشکسبوکار", "sell_business"],
+      ["انتقالکسبوکار", "transfer_business"]
+    ]);
+
+    const type = assetActions.get(actionKey);
+
+    if (type) {
+      if (!parts[1]) return null;
+
+      const transfer = type.startsWith("transfer_");
+      let targetId = null;
+      if (transfer) {
+        if (!/^\d{5,20}$/.test(parts[2] || "")) return null;
+        targetId = String(parts[2]);
+        if (targetId === actorId || !getUser(Number(targetId))) return null;
+      }
+
+      let row;
+      let amount = 0;
+
+      if (type.endsWith("_car")) {
+        row = db.prepare(`
+          SELECT c.name, c.price, p.owner_id
+          FROM car_catalog c
+          JOIN player_cars p ON p.car_id = c.car_id
+          WHERE c.name = ? COLLATE NOCASE
+          LIMIT 1
+        `).get(parts[1]);
+
+      } else if (type.endsWith("_property")) {
+        row = db.prepare(`
+          SELECT name, price, owner_id
+          FROM player_properties
+          WHERE name = ? COLLATE NOCASE
+          LIMIT 1
+        `).get(parts[1]);
+
+      } else {
+        row = db.prepare(`
+          SELECT c.name, c.price, p.owner_id
+          FROM business_catalog c
+          JOIN player_businesses p ON p.business_id = c.business_id
+          WHERE c.name = ? COLLATE NOCASE AND c.active = 1
+          LIMIT 1
+        `).get(parts[1]);
+      }
+
+      if (!row || !Number.isSafeInteger(Number(row.price)) || Number(row.price) <= 0) {
+        return null;
+      }
+
+      if (type.startsWith("buy_")) {
+        if (row.owner_id !== null && row.owner_id !== undefined) return null;
+        const buyer = getUser(ctx.from.id);
+        if (!buyer || (!buyer.infinite_money && Number(buyer.money || 0) < Number(row.price))) {
+          return null;
+        }
+      } else if (String(row.owner_id) !== actorId) {
+        return null;
+      }
+
+      // برای فروش و انتقال دارایی، ارزش ثبت‌شدهٔ خود دارایی ملاک است.
+      amount = Number(row.price);
+
+      const labels = {
+        buy_car: "خرید خودرو",
+        sell_car: "فروش خودرو",
+        transfer_car: "انتقال خودرو",
+        buy_property: "خرید ملک",
+        sell_property: "فروش ملک",
+        transfer_property: "انتقال ملک",
+        buy_business: "خرید کسب‌وکار",
+        sell_business: "فروش کسب‌وکار",
+        transfer_business: "انتقال کسب‌وکار"
+      };
+
+      return {
+        action: `${labels[type]}: ${row.name}`,
+        amount,
+        targetId
+      };
+    }
+
+    // خرید و فروش کالا از بازار اصلی یا بازار سیاه
+    if (/^(خرید|فروش)$/u.test(parts[0]) && parts.length >= 5 &&
+        /^(بازار اصلی|بازار سیاه)$/u.test(parts[1])) {
+      const market = parts[1];
+      const storeName = parts[2];
+      const itemName = parts[3];
+      const quantity = rtAmount(parts[4]);
+
+      if (!quantity || quantity > 10000) return null;
+
+      const item = db.prepare(`
+        SELECT c.item_code, c.name, c.buy_price, c.sell_price, c.stock,
+               c.active, s.active AS store_active, s.market
+        FROM shop_catalog c
+        JOIN shop_stores s ON s.store_id = c.store_id
+        WHERE s.market = ? AND s.name = ? COLLATE NOCASE
+          AND c.name = ? COLLATE NOCASE
+        LIMIT 1
+      `).get(market, storeName, itemName);
+
+      if (!item || !item.active || !item.store_active) return null;
+
+      const user = getUser(ctx.from.id);
+      if (!user) return null;
+
+      let amount;
+      if (parts[0] === "خرید") {
+        amount = Number(item.buy_price) * quantity;
+        if (!Number.isSafeInteger(amount) || amount <= 0) return null;
+
+        const stock = Number(item.stock ?? -1);
+        if (stock !== -1 && stock < quantity) return null;
+        if (!user.infinite_money && Number(user.money || 0) < amount) return null;
+
+      } else {
+        amount = Number(item.sell_price) * quantity;
+        if (!Number.isSafeInteger(amount) || amount <= 0) return null;
+
+        const inventory = db.prepare(`
+          SELECT quantity FROM player_inventory
+          WHERE telegram_id = ? AND item_code = ?
+        `).get(actorId, item.item_code);
+
+        if (!inventory || Number(inventory.quantity) < quantity) return null;
+      }
+
+      return {
+        action: `${parts[0]} کالا: ${item.name}، تعداد ${quantity} از ${storeName}`,
+        amount,
+        targetId: null
+      };
+    }
+
+    // انتقال بانکی با شماره کارت: #انتقال | شماره کارت | مبلغ
+    const cardMatch = text.match(
+      /^\s*\{?\s*#انتقال\s*\|\s*([0-9۰-۹٠-٩]{16})\s*\|\s*([0-9۰-۹٠-٩,٬]+)\s*\}?\s*$/u
+    );
+
+    if (cardMatch) {
+      const cardNumber = rtDigits(cardMatch[1]);
+      const amount = rtAmount(cardMatch[2]);
+      if (!amount) return null;
+
+      const recipient = db.prepare(
+        "SELECT telegram_id FROM users WHERE card_number = ? LIMIT 1"
+      ).get(cardNumber);
+
+      if (!recipient || String(recipient.telegram_id) === actorId) return null;
+
+      return {
+        action: "انتقال پول بانکی با شماره کارت",
+        amount,
+        targetId: String(recipient.telegram_id)
+      };
+    }
+
+    // انتقال مستقیم پول با نام کاربری یا دستور /transfer
+    const moneyMatch = text.match(
+      /^(?:\/transfer(?:@\w+)?|#?انتقال)\s+@?([A-Za-z][A-Za-z0-9_]{4,31})\s+([0-9۰-۹٠-٩,٬]+)$/u
+    );
+
+    if (moneyMatch) {
+      const username = moneyMatch[1];
+      const amount = rtAmount(moneyMatch[2]);
+      if (!amount) return null;
+
+      const recipient = db.prepare(`
+        SELECT telegram_id FROM users
+        WHERE username = ? COLLATE NOCASE
+        LIMIT 1
+      `).get(username);
+
+      if (!recipient || String(recipient.telegram_id) === actorId) return null;
+
+      const sender = getUser(ctx.from.id);
+      if (!sender || (!sender.infinite_money && Number(sender.money || 0) < amount)) {
+        return null;
+      }
+
+      return {
+        action: `انتقال پول به @${username}`,
+        amount,
+        targetId: String(recipient.telegram_id)
+      };
+    }
+
+    return null;
+  };
+
+  // مالک اصلی ربات تعیین می‌کند چه کسی مسئول دفتر ثبت باشد.
+  bot.hears(/^تعیین صاحب دفتر ثبت\s+(\d{5,20})$/u, async ctx => {
+    if (!rtIsBotOwner(ctx)) {
+      return ctx.reply("⛔ فقط مالک اصلی ربات می‌تواند صاحب دفتر ثبت را تعیین کند.");
+    }
+
+    const targetId = String(ctx.match[1]);
+    const target = getUser(Number(targetId));
+
+    if (!target) {
+      return ctx.reply(
+        "❌ کاربر پیدا نشد. فرد موردنظر ابتدا باید /start را برای ربات بفرستد."
+      );
+    }
+
+    db.prepare(`
+      INSERT INTO montadoria_registry_office (slot, owner_id, updated_at)
+      VALUES (1, ?, ?)
+      ON CONFLICT(slot) DO UPDATE SET
+        owner_id = excluded.owner_id,
+        updated_at = excluded.updated_at
+    `).run(targetId, rtNow());
+
+    await ctx.reply(
+      `✅ صاحب دفتر ثبت تعیین شد.\n` +
+      `نام: ${target.display_name || "بدون نام"}\n` +
+      `شناسه: ${targetId}\n\n` +
+      "تمام درخواست‌های مشمول قانون ۱۰٬۰۰۰ سکه برای او ارسال می‌شود."
+    );
+
+    await rtSend(
+      targetId,
+      "🏛️ شما مسئول بررسی معاملات دفتر ثبت مونتادوریا شده‌اید.\n" +
+      "درخواست‌های جدید با دکمه تأیید یا رد برای شما ارسال می‌شوند."
+    );
+  });
+
+  bot.hears(/^صاحب دفتر ثبت$/u, async ctx => {
+    const id = rtOwnerId();
+    if (!id) return ctx.reply("⛔ هنوز صاحب دفتر ثبت تعیین نشده است.");
+
+    const user = getUser(Number(id));
+    return ctx.reply(
+      `🏛️ صاحب دفتر ثبت\nنام: ${user?.display_name || "بدون نام"}\nشناسه: ${id}`
+    );
+  });
+
+  bot.hears(/^معاملات در انتظار ثبت$/u, async ctx => {
+    const officeId = rtOwnerId();
+
+    if (!officeId || String(ctx.from.id) !== officeId) {
+      return ctx.reply("⛔ فقط صاحب دفتر ثبت می‌تواند درخواست‌ها را ببیند.");
+    }
+
+    if (ctx.chat.type !== "private") {
+      return ctx.reply("این دستور را در گفت‌وگوی خصوصی ربات اجرا کن.");
+    }
+
+    const rows = db.prepare(`
+      SELECT * FROM montadoria_registry_trade_requests
+      WHERE status = 'pending' AND expires_at > ?
+      ORDER BY request_id ASC LIMIT 20
+    `).all(rtNow());
+
+    if (!rows.length) {
+      return ctx.reply("✅ معامله‌ای در انتظار بررسی نیست.");
+    }
+
+    for (const row of rows) {
+      await ctx.reply(
+        `🏛️ درخواست ثبت شماره ${row.request_id}\n\n` +
+        `👤 درخواست‌دهنده: ${row.requester_id}\n` +
+        `📋 نوع معامله: ${row.action}\n` +
+        `💰 ارزش معامله: ${Number(row.amount).toLocaleString("en-US")} سکه\n` +
+        `⌨️ دستور اصلی: ${row.command_text}\n\n` +
+        "در صورت رد، دلیل رد باید با دستور جداگانه ثبت شود.",
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "✅ تأیید", callback_data: `regtrade:approve:${row.request_id}` },
+              { text: "❌ رد", callback_data: `regtrade:reject:${row.request_id}` }
+            ]]
+          }
+        }
+      );
+    }
+  });
+
+  // در انتظار تأیید یا دریافت دلیل رد؛ اصل معامله تا این مرحله اجرا نمی‌شود.
+  bot.use(async (ctx, next) => {
+    const text = ctx.message?.text;
+    if (!text || !ctx.from?.id) return next();
+
+    let trade;
+    try {
+      trade = rtAnalyze(ctx, text);
+    } catch (error) {
+      console.error("Registry amount analysis error:", error);
+      return next();
+    }
+
+    if (!trade || trade.amount <= REGISTRY_TRADE_LIMIT) return next();
+
+    const requesterId = String(ctx.from.id);
+    const commandText = rtNorm(text);
+    const now = rtNow();
+    const officeId = rtOwnerId();
+
+    // درخواست تأییدشده فقط برای همین دستور و همین مبلغ قابل مصرف است.
+    const approved = db.prepare(`
+      SELECT * FROM montadoria_registry_trade_requests
+      WHERE requester_id = ? AND command_text = ?
+        AND status = 'approved' AND expires_at > ?
+      ORDER BY request_id DESC LIMIT 1
+    `).get(requesterId, commandText, now);
+
+    if (approved) {
+      if (Number(approved.amount) !== Number(trade.amount)) {
+        db.prepare(`
+          UPDATE montadoria_registry_trade_requests
+          SET status = 'expired'
+          WHERE request_id = ? AND status = 'approved'
+        `).run(approved.request_id);
+      } else {
+        const used = db.prepare(`
+          UPDATE montadoria_registry_trade_requests
+          SET status = 'used'
+          WHERE request_id = ? AND status = 'approved' AND expires_at > ?
+        `).run(approved.request_id, now);
+
+        if (used.changes === 1) {
+          // این بار دستور اصلی اجرا می‌شود؛ مجوز دوباره مصرف نمی‌شود.
+          return next();
+        }
+      }
+    }
+
+    const pending = db.prepare(`
+      SELECT request_id, status
+      FROM montadoria_registry_trade_requests
+      WHERE requester_id = ? AND command_text = ?
+        AND status IN ('pending', 'awaiting_reason') AND expires_at > ?
+      ORDER BY request_id DESC LIMIT 1
+    `).get(requesterId, commandText, now);
+
+    if (pending) {
+      await ctx.reply(
+        `⏳ درخواست شماره ${pending.request_id} هنوز بسته نشده است.\n` +
+        "تا پاسخ دفتر ثبت، معامله دوباره ارسال نکن."
+      );
+      return;
+    }
+
+    if (!officeId) {
+      await ctx.reply(
+        "⛔ ارزش این معامله بیشتر از ۱۰٬۰۰۰ سکه است.\n" +
+        "برای اجرای آن ابتدا مالک اصلی باید صاحب دفتر ثبت را تعیین کند."
+      );
+      return;
+    }
+
+    const requester = getUser(ctx.from.id);
+    const inserted = db.prepare(`
+      INSERT INTO montadoria_registry_trade_requests
+        (requester_id, target_id, action, amount, command_text,
+         status, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+    `).run(
+      requesterId,
+      trade.targetId,
+      trade.action,
+      trade.amount,
+      commandText,
+      now,
+      now + 86400
+    );
+
+    const requestId = Number(inserted.lastInsertRowid);
+
+    const notifyText =
+      `🏛️ درخواست معامله جدید شماره ${requestId}\n\n` +
+      `👤 درخواست‌دهنده: ${requester?.display_name || ctx.from.first_name || "کاربر"}\n` +
+      `🆔 شناسه: ${requesterId}\n` +
+      `📋 نوع معامله: ${trade.action}\n` +
+      `💰 ارزش: ${Number(trade.amount).toLocaleString("en-US")} سکه\n` +
+      `⌨️ دستور: ${commandText}\n\n` +
+      "برای تصمیم‌گیری از دکمه‌ها استفاده کن.";
+
+    const sent = await rtSend(officeId, notifyText).then(ok => {
+      if (!ok) return false;
+      return true;
+    });
+
+    if (!sent) {
+      db.prepare(`
+        DELETE FROM montadoria_registry_trade_requests
+        WHERE request_id = ? AND status = 'pending'
+      `).run(requestId);
+
+      await ctx.reply(
+        "❌ درخواست به دفتر ثبت نرسید.\n" +
+        "صاحب دفتر ثبت باید ابتدا ربات را با /start فعال کند."
+      );
+      return;
+    }
+
+    // دکمه‌ها در همان پیام درخواست دفتر ثبت قرار می‌گیرند.
+    try {
+      await bot.api.sendMessage(
+        Number(officeId),
+        `بررسی درخواست ${requestId}:`,
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "✅ تأیید معامله", callback_data: `regtrade:approve:${requestId}` },
+              { text: "❌ رد معامله", callback_data: `regtrade:reject:${requestId}` }
+            ]]
+          }
+        }
+      );
+    } catch (error) {
+      console.error("Registry buttons delivery failed:", error);
+    }
+
+    await ctx.reply(
+      `⏳ درخواست شماره ${requestId} به دفتر ثبت ارسال شد.\n` +
+      `💰 ارزش معامله: ${Number(trade.amount).toLocaleString("en-US")} سکه\n` +
+      "تا تأیید و اجرای دوبارهٔ دستور، هیچ مبلغ یا مالکیتی تغییر نمی‌کند."
+    );
+  });
+
+  bot.action(/^regtrade:(approve|reject):(\d+)$/u, async ctx => {
+    const officeId = rtOwnerId();
+
+    if (!officeId || String(ctx.from.id) !== officeId) {
+      return ctx.answerCallbackQuery({
+        text: "⛔ فقط صاحب فعلی دفتر ثبت اجازه بررسی دارد.",
+        show_alert: true
+      });
+    }
+
+    const requestId = Number(ctx.match[2]);
+    const decision = ctx.match[1];
+    const now = rtNow();
+
+    const request = db.prepare(`
+      SELECT * FROM montadoria_registry_trade_requests
+      WHERE request_id = ?
+    `).get(requestId);
+
+    if (!request || request.status !== "pending" || request.expires_at <= now) {
+      return ctx.answerCallbackQuery({
+        text: "این درخواست منقضی شده یا قبلاً بررسی شده است.",
+        show_alert: true
+      });
+    }
+
+    if (decision === "reject") {
+      const updated = db.prepare(`
+        UPDATE montadoria_registry_trade_requests
+        SET status = 'awaiting_reason', reviewed_by = ?, reviewed_at = ?
+        WHERE request_id = ? AND status = 'pending' AND expires_at > ?
+      `).run(String(ctx.from.id), now, requestId, now);
+
+      if (!updated.changes) {
+        return ctx.answerCallbackQuery({ text: "درخواست قبلاً بررسی شده است." });
+      }
+
+      await ctx.answerCallbackQuery({ text: "درخواست رد شد؛ دلیل را ثبت کن." });
+      try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch {}
+
+      await ctx.reply(
+        `📝 برای نهایی کردن رد درخواست شماره ${requestId}، دلیل را بفرست:\n\n` +
+        `دلیل رد معامله | ${requestId} | دلیل کامل رد\n\n` +
+        "حداقل ۵ حرف لازم است. پس از ثبت دلیل، نتیجه برای طرفین ارسال می‌شود."
+      );
+      return;
+    }
+
+    const updated = db.prepare(`
+      UPDATE montadoria_registry_trade_requests
+      SET status = 'approved', reviewed_by = ?, reviewed_at = ?
+      WHERE request_id = ? AND status = 'pending' AND expires_at > ?
+    `).run(String(ctx.from.id), now, requestId, now);
+
+    if (!updated.changes) {
+      return ctx.answerCallbackQuery({ text: "درخواست قبلاً بررسی شده است." });
+    }
+
+    await ctx.answerCallbackQuery({ text: "درخواست تأیید شد." });
+    try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch {}
+
+    await rtSend(
+      request.requester_id,
+      `✅ دفتر ثبت معامله شماره ${requestId} را تأیید کرد.\n` +
+      `📋 ${request.action}\n` +
+      `💰 ارزش: ${Number(request.amount).toLocaleString("en-US")} سکه\n\n` +
+      "برای اجرای معامله، همین دستور را دوباره و بدون تغییر ارسال کن:\n" +
+      request.command_text
+    );
+
+    if (request.target_id && request.target_id !== request.requester_id) {
+      await rtSend(
+        request.target_id,
+        `✅ دفتر ثبت درخواست «${request.action}» را تأیید کرد.\n` +
+        "اجرای معامله پس از ارسال دوبارهٔ دستور توسط درخواست‌دهنده انجام می‌شود؛ " +
+        "تا آن زمان مالکیت یا مبلغ تغییر نکرده است."
+      );
+    }
+  });
+
+  bot.hears(/^دلیل رد معامله\s*\|\s*(\d+)\s*\|\s*(.+)$/u, async ctx => {
+    const officeId = rtOwnerId();
+
+    if (!officeId || String(ctx.from.id) !== officeId) {
+      return ctx.reply("⛔ فقط صاحب دفتر ثبت می‌تواند دلیل رد را ثبت کند.");
+    }
+
+    const requestId = Number(ctx.match[1]);
+    const reason = String(ctx.match[2] || "").trim();
+
+    if (reason.length < 5 || reason.length > 500) {
+      return ctx.reply("❌ دلیل رد باید بین ۵ تا ۵۰۰ حرف باشد.");
+    }
+
+    const request = db.prepare(`
+      SELECT * FROM montadoria_registry_trade_requests
+      WHERE request_id = ? AND status = 'awaiting_reason'
+    `).get(requestId);
+
+    if (!request) {
+      return ctx.reply(
+        "❌ درخواست در انتظار دلیل رد پیدا نشد؛ ممکن است قبلاً نهایی شده باشد."
+      );
+    }
+
+    const now = rtNow();
+    const updated = db.prepare(`
+      UPDATE montadoria_registry_trade_requests
+      SET status = 'rejected', rejection_reason = ?, reviewed_by = ?, reviewed_at = ?
+      WHERE request_id = ? AND status = 'awaiting_reason'
+    `).run(reason, String(ctx.from.id), now, requestId);
+
+    if (!updated.changes) {
+      return ctx.reply("❌ درخواست قبلاً نهایی شده است.");
+    }
+
+    const notice =
+      `❌ معامله شماره ${requestId} توسط دفتر ثبت رد شد.\n\n` +
+      `📋 معامله: ${request.action}\n` +
+      `💰 ارزش: ${Number(request.amount).toLocaleString("en-US")} سکه\n` +
+      `📝 علت رد: ${reason}\n\n` +
+      "هیچ مبلغ یا مالکیتی به‌واسطهٔ این درخواست تغییر نکرد.";
+
+    await rtSend(request.requester_id, notice);
+
+    if (request.target_id && request.target_id !== request.requester_id) {
+      await rtSend(
+        request.target_id,
+        `❌ درخواست معامله‌ای که با شما مرتبط بود رد شد.\n` +
+        `📋 معامله: ${request.action}\n` +
+        `📝 علت رد دفتر ثبت: ${reason}\n` +
+        "این درخواست اجرا نشده است."
+      );
+    }
+
+    return ctx.reply(`✅ دلیل رد درخواست ${requestId} ثبت و نتیجه برای طرفین ارسال شد.`);
+  });
+  // END MONTADORIA_REGISTRY_THRESHOLD_V2
+
+
+
   // MONTADORIA_MAP_LOCATOR_V1
   db.exec(`
     CREATE TABLE IF NOT EXISTS montadoria_map_invite_links (
