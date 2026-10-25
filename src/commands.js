@@ -924,16 +924,23 @@ export function registerCommands(bot) {
 
     const requestId = Number(inserted.lastInsertRowid);
 
+    const requesterName = requester?.display_name || ctx.from.first_name || "کاربر";
+    const requesterUsername = ctx.from.username ? `@${ctx.from.username}` : "بدون یوزرنیم";
+    const safeRequesterName = requesterName
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
     const notifyText =
       `🏛️ درخواست معامله جدید شماره ${requestId}\n\n` +
-      `👤 درخواست‌دهنده: ${requester?.display_name || ctx.from.first_name || "کاربر"}\n` +
+      `👤 درخواست‌دهنده: <a href="tg://user?id=${requesterId}">${safeRequesterName}</a> (${requesterUsername})\n` +
       `🆔 شناسه: ${requesterId}\n` +
       `📋 نوع معامله: ${trade.action}\n` +
       `💰 ارزش: ${Number(trade.amount).toLocaleString("en-US")} سکه\n` +
       `⌨️ دستور: ${commandText}\n\n` +
       "برای تصمیم‌گیری از دکمه‌ها استفاده کن.";
 
-    const sent = await rtSend(officeId, notifyText).then(ok => {
+    const sent = await rtSend(officeId, notifyText, { parse_mode: "HTML" }).then(ok => {
       if (!ok) return false;
       return true;
     });
