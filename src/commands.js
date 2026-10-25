@@ -976,7 +976,7 @@ export function registerCommands(bot) {
     );
   });
 
-  bot.action(/^regtrade:(approve|reject):(\d+)$/u, async ctx => {
+  bot.callbackQuery(/^regtrade:(approve|reject):(\d+)$/u, async ctx => {
     const officeId = rtOwnerId();
 
     if (!officeId || String(ctx.from.id) !== officeId) {
