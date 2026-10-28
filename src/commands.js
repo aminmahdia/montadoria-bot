@@ -2688,6 +2688,96 @@ export function registerCommands(bot) {
     seedShop.run(...item, Date.now());
   }
 
+
+  // MONTADORIA_REGISTRY_AGENTS_V1
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS montadoria_registry_agents (
+      telegram_id TEXT PRIMARY KEY,
+      added_by TEXT NOT NULL,
+      added_at INTEGER NOT NULL
+    )
+  `);
+
+  // مالک اصلی فقط شناسه‌ای است که در OWNER_ID تنظیم شده است.
+  const rtIsPrimaryOwner = ctx =>
+    Number(OWNER_ID) > 0 &&
+    String(ctx.from?.id ?? "") === String(OWNER_ID);
+
+  const rtIsRegistrar = ctx => {
+    if (!ctx?.from?.id) return false;
+    if (rtIsPrimaryOwner(ctx)) return true;
+
+    return Boolean(db.prepare(
+      "SELECT 1 FROM montadoria_registry_agents WHERE telegram_id = ?"
+    ).get(String(ctx.from.id)));
+  };
+
+  const rtCanRegisterAsset = ctx => rtIsRegistrar(ctx);
+
+  bot.hears(/^افزودن\s+م[اأ]مور\s+ثبت\s*\|/u, async ctx => {
+    if (!rtIsPrimaryOwner(ctx)) {
+      return ctx.reply("⛔ فقط مالک اصلی ربات می‌تواند مأمور ثبت اضافه کند.");
+    }
+
+    const parts = String(ctx.message?.text || "").split("|").map(x => x.trim());
+    const id = parts[1] || "";
+
+    if (parts.length !== 2 || !/^\d{1,20}$/.test(id)) {
+      return ctx.reply("فرمت صحیح:\nافزودن مامور ثبت | شناسه عددی تلگرام");
+    }
+
+    if (String(OWNER_ID) === id) {
+      return ctx.reply("مالک اصلی از قبل دسترسی کامل دارد.");
+    }
+
+    const result = db.prepare(`
+      INSERT OR IGNORE INTO montadoria_registry_agents
+        (telegram_id, added_by, added_at)
+      VALUES (?, ?, ?)
+    `).run(id, String(ctx.from.id), Math.floor(Date.now() / 1000));
+
+    return ctx.reply(result.changes
+      ? `✅ شناسه ${id} به مأموران ثبت اضافه شد.`
+      : `شناسه ${id} از قبل مأمور ثبت است.`);
+  });
+
+  bot.hears(/^حذف\s+م[اأ]مور\s+ثبت\s*\|/u, async ctx => {
+    if (!rtIsPrimaryOwner(ctx)) {
+      return ctx.reply("⛔ فقط مالک اصلی ربات می‌تواند مأمور ثبت حذف کند.");
+    }
+
+    const parts = String(ctx.message?.text || "").split("|").map(x => x.trim());
+    const id = parts[1] || "";
+
+    if (parts.length !== 2 || !/^\d{1,20}$/.test(id)) {
+      return ctx.reply("فرمت صحیح:\nحذف مامور ثبت | شناسه عددی تلگرام");
+    }
+
+    const result = db.prepare(
+      "DELETE FROM montadoria_registry_agents WHERE telegram_id = ?"
+    ).run(id);
+
+    return ctx.reply(result.changes
+      ? `✅ شناسه ${id} از مأموران ثبت حذف شد.`
+      : `شناسه ${id} در فهرست مأموران ثبت نبود.`);
+  });
+
+  bot.hears(/^(?:فهرست\s+)?م[اأ]موران\s+ثبت$/u, async ctx => {
+    if (!rtIsPrimaryOwner(ctx)) {
+      return ctx.reply("⛔ فقط مالک اصلی ربات اجازه مشاهده این فهرست را دارد.");
+    }
+
+    const rows = db.prepare(`
+      SELECT telegram_id FROM montadoria_registry_agents ORDER BY added_at
+    `).all();
+
+    return ctx.reply(rows.length
+      ? "⟡ فهرست مأموران ثبت ⟡\n\n" +
+        rows.map((r, i) => `${i + 1}. ${r.telegram_id}`).join("\n")
+      : "فهرست مأموران ثبت خالی است.");
+  });
+  // END MONTADORIA_REGISTRY_AGENTS_V1
+
   const shopCanManage = ctx => {
     const staff = getUser(ctx.from.id);
     const role = String(staff?.role || "").toLowerCase();
@@ -2737,7 +2827,7 @@ const businessManager = (u) =>
 bot.hears(/^ثبت کسب[‌ ]وکار\s*\|/i, async (ctx) => {
   const a = businessParts(ctx);
 
-  if (!businessManager(getUser(ctx.from.id))) {
+  if (!rtCanRegisterAsset(ctx)) {
     return ctx.reply("⛔ فقط مدیر یا مالک می‌تواند کسب‌وکار ثبت کند.");
   }
 
@@ -3289,7 +3379,7 @@ const carIsManager = (u) => ["owner", "moderator"].includes(String(u?.role || ""
 bot.hears(/^ثبت خودرو\s*\|/i, async (ctx) => {
   const a = carParts(ctx);
   const u = getUser(ctx.from.id);
-  if (!carIsManager(u)) return ctx.reply("⛔ فقط مدیر یا مالک می‌تواند خودرو ثبت کند.");
+  if (!rtCanRegisterAsset(ctx)) return ctx.reply("⛔ فقط مدیر یا مالک می‌تواند خودرو ثبت کند.");
   if (a.length < 4 || !a[1] || !/^\d+$/.test(a[2])) {
     return ctx.reply("فرمت صحیح:\nثبت خودرو | نام خودرو | قیمت | توضیحات");
   }
@@ -3451,7 +3541,7 @@ const propertyIsManager = ctx =>
   );
 
 bot.hears(/^ثبت ملک\s*\|/i, async ctx => {
-  if (!propertyIsManager(ctx))
+  if (!rtCanRegisterAsset(ctx))
     return ctx.reply("⛔ فقط مالک یا مدیر می‌تواند ملک ثبت کند.");
 
   const a = propertyParts(ctx.message.text);
@@ -4382,7 +4472,7 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
 
   // ساخت فروشگاه مخفی در بازار سیاه
   bot.hears(/^افزودن فروشگاه مخفی\s*\|\s*بازار سیاه\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
-    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+    if (!rtCanRegisterAsset(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
 
     const name = hmText(ctx.match[1]);
     const category = hmText(ctx.match[2]);
@@ -4565,7 +4655,7 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
   });
 
   bot.hears(/^افزودن فروشگاه\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
-    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+    if (!rtCanRegisterAsset(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
 
     const [, market, rawName, rawCategory, rawDesc] = ctx.match;
     const name = mmText(rawName), category = mmText(rawCategory), desc = mmText(rawDesc);
@@ -4592,7 +4682,7 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
   });
 
   bot.hears(/^افزودن کالا\s*\|\s*(بازار اصلی|بازار سیاه)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/u, async ctx => {
-    if (!mmManage(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
+    if (!rtCanRegisterAsset(ctx)) return ctx.reply("⛔ فقط مالک یا مدیر اجازه این کار را دارد.");
 
     const [, market, rawStore, rawName, rawBuy, rawSell, rawDesc] = ctx.match;
     const storeName = mmText(rawStore), name = mmText(rawName);
@@ -4849,7 +4939,7 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
 
   // افزودن کالا
   bot.hears(/^افزودن کالا\s*\|\s*([^|]+?)\s*\|\s*([\d۰-۹٠-٩٬,]+)\s*\|\s*([\d۰-۹٠-٩٬,]+)(?:\s*\|\s*(.*))?$/u, async ctx => {
-    if (!shopCanManage(ctx)) {
+    if (!rtCanRegisterAsset(ctx)) {
       return ctx.reply("⛔ فقط مالک و ناظران اجازه افزودن کالا دارند.");
     }
 
