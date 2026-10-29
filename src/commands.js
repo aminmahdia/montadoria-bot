@@ -3721,6 +3721,83 @@ bot.hears(/^انتقال ملک\s*\|/i, async ctx => {
 
 // END MONTADORIA PROPERTY SYSTEM V1
 
+
+// MONTADORIA_ASSET_DELETE_ADMIN_V1
+
+bot.hears(/^حذف\s+(?:خودرو|ماشین)\s*\|\s*(.+)$/i, async (ctx) => {
+  if (!rtCanRegisterAsset(ctx)) return;
+  const name = ctx.match[1].trim();
+  try {
+    const car = db.prepare(
+      "SELECT car_id, name FROM car_catalog WHERE name = ? COLLATE NOCASE"
+    ).get(name);
+    if (!car) return ctx.reply("خودرویی با این نام پیدا نشد.");
+
+    const owners = db.prepare(
+      "SELECT owner_id FROM player_cars WHERE car_id = ?"
+    ).all(car.car_id);
+    if (owners.some(x => x.owner_id != null && String(x.owner_id).trim() !== "")) {
+      return ctx.reply("این خودرو مالک دارد و حذف نشد.");
+    }
+
+    db.prepare("DELETE FROM player_cars WHERE car_id = ?").run(car.car_id);
+    db.prepare("DELETE FROM car_catalog WHERE car_id = ?").run(car.car_id);
+    return ctx.reply("خودرو «" + car.name + "» حذف شد.");
+  } catch (e) {
+    console.error("ASSET_DELETE_CAR_ERROR:", e);
+    return ctx.reply("خطا هنگام حذف خودرو؛ بررسی گزارش سرور لازم است.");
+  }
+});
+
+bot.hears(/^حذف\s+ملک\s*\|\s*(.+)$/i, async (ctx) => {
+  if (!rtCanRegisterAsset(ctx)) return;
+  const name = ctx.match[1].trim();
+  try {
+    const p = db.prepare(
+      "SELECT property_id, name, owner_id FROM player_properties WHERE name = ? COLLATE NOCASE"
+    ).get(name);
+    if (!p) return ctx.reply("ملکی با این نام پیدا نشد.");
+    if (p.owner_id != null && String(p.owner_id).trim() !== "") {
+      return ctx.reply("این ملک مالک دارد و حذف نشد.");
+    }
+
+    db.prepare("DELETE FROM player_properties WHERE property_id = ?").run(p.property_id);
+    return ctx.reply("ملک «" + p.name + "» حذف شد.");
+  } catch (e) {
+    console.error("ASSET_DELETE_PROPERTY_ERROR:", e);
+    return ctx.reply("خطا هنگام حذف ملک؛ بررسی گزارش سرور لازم است.");
+  }
+});
+
+bot.hears(/^حذف\s+کسب[‌ ]وکار\s*\|\s*(.+)$/i, async (ctx) => {
+  if (!rtCanRegisterAsset(ctx)) return;
+  const name = ctx.match[1].trim();
+  try {
+    const b = db.prepare(
+      "SELECT business_id, name FROM business_catalog WHERE name = ? COLLATE NOCASE"
+    ).get(name);
+    if (!b) return ctx.reply("کسب‌وکاری با این نام پیدا نشد.");
+
+    const owners = db.prepare(
+      "SELECT owner_id FROM player_businesses WHERE business_id = ?"
+    ).all(b.business_id);
+    if (owners.some(x => x.owner_id != null && String(x.owner_id).trim() !== "")) {
+      return ctx.reply("این کسب‌وکار مالک دارد و غیرفعال نشد.");
+    }
+
+    db.prepare(
+      "UPDATE business_catalog SET active = 0 WHERE business_id = ?"
+    ).run(b.business_id);
+    return ctx.reply("کسب‌وکار «" + b.name + "» غیرفعال شد؛ سابقه آن حفظ شد.");
+  } catch (e) {
+    console.error("ASSET_DELETE_BUSINESS_ERROR:", e);
+    return ctx.reply("خطا هنگام غیرفعال‌سازی؛ بررسی گزارش سرور لازم است.");
+  }
+});
+
+// END MONTADORIA_ASSET_DELETE_ADMIN_V1
+
+
 // MONTADORIA TAX SYSTEM V1
 {
   const taxDb = db;
