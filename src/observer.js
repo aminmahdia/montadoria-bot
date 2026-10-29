@@ -125,12 +125,151 @@ function escapeHtml(value = "") {
   })[char]);
 }
 
+
+// MONTADORIA_REPORT_IDENTITIES_LINKS_V1
+
+async function reportUserLabel(api, rawId) {
+  const id = Number(rawId);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    return "کاربر تلگرام";
+  }
+
+  let row = null;
+  try {
+    row = db.prepare(
+      "SELECT username, display_name FROM users WHERE telegram_id = ?"
+    ).get(id);
+  } catch {}
+
+  let name = String(row?.display_name || "").trim();
+  let username = String(row?.username || "").replace(/^@/, "").trim();
+
+  if ((!name || !username) && typeof api?.getChat === "function") {
+    try {
+      const chat = await api.getChat(id);
+      if (!name) {
+        name = [chat.first_name, chat.last_name]
+          .filter(Boolean).join(" ").trim();
+      }
+      if (!username) username = chat.username || "";
+    } catch {}
+  }
+
+  name = name || (username ? "@" + username : "کاربر تلگرام");
+  const mention = '<a href="tg://user?id=' + id + '">' +
+    escapeHtml(name) + "</a>";
+
+  return username && name !== "@" + username
+    ? mention + " (@" + escapeHtml(username) + ")"
+    : mention;
+}
+
+async function reportGroupLabel(api, rawId) {
+  const id = Number(rawId);
+  let title = "";
+  let username = "";
+
+  try {
+    const row = db.prepare(
+      "SELECT title FROM rp_groups WHERE chat_id = ? LIMIT 1"
+    ).get(id);
+    title = row?.title || "";
+  } catch {}
+
+  if (!title) {
+    try {
+      const row = db.prepare(
+        "SELECT title FROM free_chat_groups WHERE chat_id = ? LIMIT 1"
+      ).get(id);
+      title = row?.title || "";
+    } catch {}
+  }
+
+  if (Number.isSafeInteger(id) && typeof api?.getChat === "function") {
+    try {
+      const chat = await api.getChat(id);
+      title = chat.title || title;
+      username = chat.username || "";
+    } catch {}
+  }
+
+  title = title || "گروه تلگرام";
+
+  return username
+    ? '<a href="https://t.me/' + encodeURIComponent(username) + '">' +
+        escapeHtml(title) + "</a>"
+    : escapeHtml(title);
+}
+
+async function normalizeReportIdentifiers(api, input) {
+  let output = String(input || "");
+
+  async function replaceMatches(regex, render) {
+    const matches = [...output.matchAll(regex)];
+    for (const m of matches.reverse()) {
+      const replacement = await render(m);
+      output = output.slice(0, m.index) + replacement +
+        output.slice(m.index + m[0].length);
+    }
+  }
+
+  await replaceMatches(
+    /(شناسه\s*کاربر\s*:\s*(?:<code>)?)(-?\d+)(?:<\/code>)?/gi,
+    async m => "👤 کاربر: " + await reportUserLabel(api, m[2])
+  );
+
+  await replaceMatches(
+    /(کاربر|مالک|مدیر)\s*:\s*(?:<code>)?(-?\d+)(?:<\/code>)?/gi,
+    async m => m[1] + ": " + await reportUserLabel(api, m[2])
+  );
+
+  await replaceMatches(
+    /(گروه\s*:\s*(?:<code>)?)(-?\d+)(?:<\/code>)?/gi,
+    async m => "👥 گروه: " + await reportGroupLabel(api, m[2])
+  );
+
+  await replaceMatches(
+    /(شناسه\s*:\s*(?:<code>)?)(-?\d+)(?:<\/code>)?/gi,
+    async m => Number(m[2]) < 0
+      ? "👥 گروه: " + await reportGroupLabel(api, m[2])
+      : "👤 کاربر: " + await reportUserLabel(api, m[2])
+  );
+
+  await replaceMatches(
+    /((?:محدودیت\s+)?کاربر\s+)(-?\d+)(?!\d)/gi,
+    async m => m[1] + await reportUserLabel(api, m[2])
+  );
+
+  return output;
+}
+
+function reportSourceMessageUrl(ctx) {
+  const chat = ctx?.chat;
+  const messageId = ctx?.msg?.message_id;
+
+  if (!chat?.id || !messageId || chat.type === "private") {
+    return null;
+  }
+
+  if (chat.username) {
+    return "https://t.me/" + chat.username + "/" + messageId;
+  }
+
+  const chatId = String(chat.id);
+  if (/^-100\d+$/.test(chatId)) {
+    return "https://t.me/c/" + chatId.slice(4) + "/" + messageId;
+  }
+
+  return null;
+}
+
 async function report(botOrApi, text) {
   if (!OBSERVER_GROUP_ID) {
     console.warn("[OBSERVER REPORT]", text);
     return;
   }
 
+  const sourceCtx = botOrApi?.api ? botOrApi : null;
   const api = botOrApi?.api ?? botOrApi;
 
   if (!api || typeof api.sendMessage !== "function") {
@@ -139,7 +278,9 @@ async function report(botOrApi, text) {
   }
 
   try {
-    const reportText = String(text ?? "").trimEnd();
+    const reportText = await normalizeReportIdentifiers(
+      api, String(text ?? "").trimEnd()
+    );
 
     const hashtagRules = [
       { pattern: /انتقال.{0,30}(وجه|پول|بانک|کارت)|(?:وجه|پول).{0,30}انتقال/i, tag: "#انتقال_وجه" },
@@ -176,7 +317,14 @@ async function report(botOrApi, text) {
       ? `${reportText}\n\n${tagsToAppend.join(" ")}`
       : reportText;
 
-    await api.sendMessage(OBSERVER_GROUP_ID, taggedReportText, {
+    const sourceUrl = reportSourceMessageUrl(sourceCtx);
+    const finalReportText = sourceUrl
+      ? taggedReportText + 
+        '\n\n🔗 <a href="' + escapeHtml(sourceUrl) +
+        '">مشاهده پیام اصلی</a>'
+      : taggedReportText;
+
+    await api.sendMessage(OBSERVER_GROUP_ID, finalReportText, {
       parse_mode: "HTML"
     });
   } catch (error) {
@@ -271,7 +419,7 @@ async function restrictAcrossGroups(api, telegramId, username = "") {
     `گروه‌های موفق: ${successful.length}/${groups.length}\n` +
     (failed.length
       ? `گروه‌های ناموفق: ${failed.map(g =>
-          escapeHtml(g.title || String(g.chat_id))
+          escapeHtml(g.title || "گروه بدون نام")
         ).join("، ")}`
       : "محدودیت در تمام گروه‌های فعال اعمال شد.")
   );
@@ -339,8 +487,7 @@ async function warn(ctx, reason) {
     );
   } catch {}
 
-  await report(
-    ctx.api,
+  await report(ctx,
     `⚠️ <b>اخطار نقش‌آفرینی</b>\n` +
     `کاربر: ${escapeHtml(user.first_name || "نامشخص")}\n` +
     `یوزرنیم: ${username}\n` +
@@ -903,8 +1050,7 @@ export function registerObserver(bot) {
       `).run(currentTime, currentTime, targetId);
     }
 
-    await report(
-      ctx.api,
+    await report(ctx,
       `🔐 تغییر نژاد | شناسه: ${targetId} | نژاد: ${race} | مالک: ${ctx.from.id}`
     );
 
@@ -1115,8 +1261,7 @@ export function registerObserver(bot) {
     audit(ctx.from.id, "rp_group_add", `${ctx.chat.id}`);
 
     await ctx.reply("✅ این گروه به فهرست گروه‌های مجاز نقش‌آفرینی اضافه شد.");
-    await report(
-      ctx.api,
+    await report(ctx,
       `➕ گروه نقش‌آفرینی ثبت شد:\n${escapeHtml(ctx.chat.title || "")}\n` +
       `شناسه: <code>${ctx.chat.id}</code>`
     );
@@ -1138,8 +1283,7 @@ export function registerObserver(bot) {
     audit(ctx.from.id, "rp_group_remove", `${ctx.chat.id}`);
 
     await ctx.reply("گروه از فهرست نظارت خارج شد.");
-    await report(
-      ctx.api,
+    await report(ctx,
       `➖ گروه از نظارت خارج شد: <code>${ctx.chat.id}</code>`
     );
   });
@@ -1343,8 +1487,7 @@ export function registerObserver(bot) {
         ).join("\\n")
       : "";
 
-    await report(
-      ctx.api,
+    await report(ctx,
       `🔊 <b>گزارش رفع سکوت دستی</b>\\n` +
       `کاربر: <code>${targetId}</code>\\n` +
       `موفق: ${successful.length} از ${groups.length} گروه\\n` +
@@ -1384,8 +1527,7 @@ export function registerObserver(bot) {
     audit(ctx.from.id, "warnings_cleared",
       `telegram_id=${targetId};count=${result.changes}`);
 
-    await report(
-      ctx.api,
+    await report(ctx,
       `🧾 <b>پاک‌سازی اخطارها</b>\n` +
       `کاربر: <code>${targetId}</code>\n` +
       `اخطارهای پاک‌شده: ${result.changes}\n` +
@@ -1530,8 +1672,7 @@ export function registerObserver(bot) {
         now()
       );
 
-      await report(
-        ctx.api,
+      await report(ctx,
         `🔄 <b>تغییر یوزرنیم</b>\n` +
         `کاربر: <code>${user.id}</code>\n` +
         `قبلی: ${escapeHtml(existing.username || "نداشت")}\n` +
@@ -1611,14 +1752,12 @@ if (
 ) {
   try {
     await ctx.api.deleteMessage(ctx.chat.id, ctx.msg.message_id);
-    await report(
-      ctx.api,
+    await report(ctx,
       `🌙 پیام هنگام خواب حذف شد | کاربر: ${user.id} | گروه: ${ctx.chat.id}`
     );
   } catch (error) {
     console.error("Sleep message deletion failed:", error.message);
-    await report(
-      ctx.api,
+    await report(ctx,
       `⚠️ حذف پیام هنگام خواب ناموفق بود | کاربر: ${user.id} | گروه: ${ctx.chat.id} | ${error.message}`
     );
   }
@@ -1651,8 +1790,7 @@ if (
         WHERE telegram_id = ? AND race = 'خون‌آشام'
       `).run(user.id);
 
-      await report(
-        ctx.api,
+      await report(ctx,
         `🩸 ثبت نوشیدن خون | کاربر: ${user.id} | گروه: ${ctx.chat.id}`
       );
     }
@@ -1681,8 +1819,7 @@ if (
           VALUES (?, ?, ?, ?)
         `).run(user.id, ctx.chat.id, now(), user.username || null);
 
-        await report(
-          ctx.api,
+        await report(ctx,
           `🚪 ورود به مپ | کاربر: ${user.id} | گروه: ${ctx.chat.id}`
         );
       }
@@ -1706,8 +1843,7 @@ if (
         WHERE telegram_id = ? AND chat_id = ?
       `).run(user.id, ctx.chat.id);
 
-      await report(
-        ctx.api,
+      await report(ctx,
         `🚪 خروج از مپ | کاربر: ${user.id} | گروه: ${ctx.chat.id}`
       );
     }
@@ -1771,8 +1907,7 @@ if (
 
         updateNeed(user.id, "food");
 
-        await report(
-          ctx.api,
+        await report(ctx,
           `🍽️ ثبت غذا | کاربر: ${user.id} | فاصله مجاز: ۸ ساعت | گروه: ${ctx.chat.id}`
         );
       }
@@ -1814,8 +1949,7 @@ if (
           user.id
         );
 
-        await report(
-          ctx.api,
+        await report(ctx,
           `🌙 ثبت خواب | کاربر: ${user.id} | مدت: ${sleepHours} ساعت | گروه: ${ctx.chat.id}`
         );
       }
