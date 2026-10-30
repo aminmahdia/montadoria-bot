@@ -1,4 +1,5 @@
 import db from "./database.js";
+import { awardActivityXP, xpEventKey } from "./xp.js";
 
 const OWNER_ID = Number(process.env.OWNER_ID || 0);
 const OBSERVER_GROUP_ID = process.env.OBSERVER_GROUP_ID
@@ -1851,7 +1852,7 @@ if (
     // کنترل مپ فعال برای ثبت نیازها
     const needActionRequested = text.split(/\r?\n/).some(line => {
       const tag = line.trim().split(/\s+/)[0];
-      return ["#خوردن", "#خوابیدن", "#خواب"].includes(tag);
+      return ["#خوردن", "#خوابیدن", "#خواب", "#تمرین"].includes(tag);
     });
 
     if (needActionRequested) {
@@ -1873,7 +1874,7 @@ if (
     }
 
     // ثبت خودکار رویدادهای غذا و خواب
-    const hasNeedTag = tag => text.split(/\\r?\\n/).some(
+    const hasNeedTag = tag => text.split(/\r?\n/).some(
       line => line.trim().split(/\\s+/)[0] === tag
     );
 
@@ -1961,6 +1962,29 @@ if (
 
     if (!validation.ok) {
       await warn(ctx, validation.reason);
+    }
+
+    // پاداش تمرین فقط برای رول معتبر، با توضیح اکشن کافی و حضور در مپ ثبت می‌شود.
+    if (validation.ok && hasMapTag("#تمرین")) {
+      const actionText = text.split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(line => /^\*[^*].*\*$/.test(line))
+        .map(line => line.slice(1, -1).trim())
+        .join(" ");
+
+      if (actionText.length >= 40) {
+        const reward = awardActivityXP(
+          user.id,
+          "training",
+          xpEventKey(ctx, "training")
+        );
+
+        if (reward?.gainedXP) {
+          await report(ctx,
+            `🏋️ ثبت تمرین معتبر | کاربر: ${user.id} | پاداش: ${reward.gainedXP} XP | گروه: ${ctx.chat.id}`
+          );
+        }
+      }
     }
   });
 }

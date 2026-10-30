@@ -1,5 +1,6 @@
 import db from "./database.js"
 import { randomBytes } from "node:crypto"
+import { awardActivityXP, xpAwardText, xpEventKey } from "./xp.js"
 
 const OWNER_ID = Number(process.env.OWNER_ID)
 
@@ -2975,11 +2976,13 @@ bot.hears(/^خرید کسب[‌ ]وکار\s*\|/i, async (ctx) => {
 
     if (r.error) return ctx.reply("❌ " + r.error);
 
+    const xpReward = awardActivityXP(ctx.from.id, "asset_purchase", xpEventKey(ctx, "business-purchase"));
     return ctx.reply(
       `✅ کسب‌وکار «${r.name}» خریداری شد.\n` +
       `💰 هزینه: ${r.price}\n` +
       `📈 درآمد روزانه: ${r.income}\n\n` +
-      `⏳ اولین درآمد، پس از گذشت ۲۴ ساعت قابل دریافت است.`
+      `⏳ اولین درآمد، پس از گذشت ۲۴ ساعت قابل دریافت است.` +
+      xpAwardText(xpReward)
     );
   } catch (e) {
     if (String(e.message).includes("BUSINESS_ALREADY_SOLD")) {
@@ -3151,9 +3154,11 @@ bot.hears(/^فروش کسب[‌ ]وکار\s*\|/i, async (ctx) => {
 
     if (result.error) return ctx.reply("❌ " + result.error);
 
+    const xpReward = awardActivityXP(ctx.from.id, "asset_sale", xpEventKey(ctx, "business-sale"));
     return ctx.reply(
       `✅ کسب‌وکار «${result.name}» فروخته شد.\n` +
-      `💰 مبلغ دریافتی (۷۰٪ قیمت ثبت‌شده): ${result.payout}`
+      `💰 مبلغ دریافتی (۷۰٪ قیمت ثبت‌شده): ${result.payout}` +
+      xpAwardText(xpReward)
     );
   } catch (e) {
     console.error("فروش کسب‌وکار:", e);
@@ -3444,7 +3449,8 @@ bot.hears(/^خرید خودرو\s*\|/i, async (ctx) => {
   try {
     const result = transaction();
     if (result.error) return ctx.reply("❌ " + result.error);
-    return ctx.reply(`✅ خودرو «${result.name}» با قیمت ${result.price} خریداری شد.`);
+    const xpReward = awardActivityXP(ctx.from.id, "asset_purchase", xpEventKey(ctx, "car-purchase"));
+    return ctx.reply(`✅ خودرو «${result.name}» با قیمت ${result.price} خریداری شد.${xpAwardText(xpReward)}`);
   } catch (e) {
     if (String(e.message).includes("CAR_ALREADY_SOLD")) return ctx.reply("این خودرو قبلاً فروخته شده است.");
     console.error("خرید خودرو:", e);
@@ -3487,7 +3493,8 @@ bot.hears(/^فروش خودرو\s*\|/i, async (ctx) => {
   try {
     const result = transaction();
     if (result.error) return ctx.reply("❌ " + result.error);
-    return ctx.reply(`✅ خودرو «${result.name}» فروخته شد.\n💰 مبلغ دریافتی: ${result.payout}`);
+    const xpReward = awardActivityXP(ctx.from.id, "asset_sale", xpEventKey(ctx, "car-sale"));
+    return ctx.reply(`✅ خودرو «${result.name}» فروخته شد.\n💰 مبلغ دریافتی: ${result.payout}${xpAwardText(xpReward)}`);
   } catch (e) {
     console.error("فروش خودرو:", e);
     return ctx.reply("فروش خودرو انجام نشد.");
@@ -3617,7 +3624,8 @@ bot.hears(/^خرید ملک\s*\|/i, async ctx => {
 
     const result = purchase();
     if (result.error) return ctx.reply("❌ " + result.error);
-    return ctx.reply(`✅ ملک «${result.prop.name}» به نام تو ثبت شد.\n💰 قیمت: ${Number(result.prop.price).toLocaleString("en-US")} سکه`);
+    const xpReward = awardActivityXP(ctx.from.id, "asset_purchase", xpEventKey(ctx, "property-purchase"));
+    return ctx.reply(`✅ ملک «${result.prop.name}» به نام تو ثبت شد.\n💰 قیمت: ${Number(result.prop.price).toLocaleString("en-US")} سکه${xpAwardText(xpReward)}`);
   } catch (e) {
     console.error("Property purchase error:", e);
     return ctx.reply("❌ خرید انجام نشد.");
@@ -3647,7 +3655,8 @@ bot.hears(/^فروش ملک\s*\|/i, async ctx => {
   });
 
   if (!sale()) return ctx.reply("❌ فروش انجام نشد.");
-  return ctx.reply(`✅ ملک «${prop.name}» فروخته شد.\n💰 دریافتی: ${Number(prop.price).toLocaleString("en-US")} سکه`);
+  const xpReward = awardActivityXP(ctx.from.id, "asset_sale", xpEventKey(ctx, "property-sale"));
+  return ctx.reply(`✅ ملک «${prop.name}» فروخته شد.\n💰 دریافتی: ${Number(prop.price).toLocaleString("en-US")} سکه${xpAwardText(xpReward)}`);
 });
 
 // MONTADORIA PROPERTY TRANSFER V1
@@ -4911,8 +4920,9 @@ bot.hears(/^حذف\s+کسب[‌ ]وکار\s*\|\s*(.+)$/i, async (ctx) => {
         `).run(String(ctx.from.id), item.item_code, qty);
       })();
 
+      const xpReward = awardActivityXP(ctx.from.id, "shop_purchase", xpEventKey(ctx, "shop-purchase"));
       return ctx.reply(
-        `✅ خرید انجام شد\nکالا: ${item.name}\nتعداد: ${qty}\nهزینه: ${mmCash(cost)}`
+        `✅ خرید انجام شد\nکالا: ${item.name}\nتعداد: ${qty}\nهزینه: ${mmCash(cost)}${xpAwardText(xpReward)}`
       );
     } catch {
       return ctx.reply("خرید انجام نشد؛ ممکن است ساختار حساب کاربری متفاوت باشد.");
@@ -4959,8 +4969,9 @@ bot.hears(/^حذف\s+کسب[‌ ]وکار\s*\|\s*(.+)$/i, async (ctx) => {
           .run(income, id);
       })();
 
+      const xpReward = awardActivityXP(ctx.from.id, "shop_sale", xpEventKey(ctx, "shop-sale"));
       return ctx.reply(
-        `✅ فروش انجام شد\nکالا: ${item.name}\nتعداد: ${qty}\nدریافتی: ${mmCash(income)}`
+        `✅ فروش انجام شد\nکالا: ${item.name}\nتعداد: ${qty}\nدریافتی: ${mmCash(income)}${xpAwardText(xpReward)}`
       );
     } catch {
       return ctx.reply("فروش انجام نشد؛ ساختار حساب یا کیف را بررسی کن.");
@@ -5334,11 +5345,13 @@ bot.hears(/^حذف\s+کسب[‌ ]وکار\s*\|\s*(.+)$/i, async (ctx) => {
         `).run(String(ctx.from.id), item.item_code, quantity);
       })();
 
+      const xpReward = awardActivityXP(ctx.from.id, "shop_purchase", xpEventKey(ctx, "shop-purchase-legacy"));
       return ctx.reply(
         `✅ خرید انجام شد.\n\n` +
         `📦 کالا: ${item.name}\n` +
         `🔢 تعداد: ${quantity}\n` +
-        `💰 هزینه: ${total.toLocaleString("en-US")}`
+        `💰 هزینه: ${total.toLocaleString("en-US")}` +
+        xpAwardText(xpReward)
       );
     } catch (e) {
       console.error("Shop purchase error:", e);
@@ -5386,11 +5399,13 @@ bot.hears(/^حذف\s+کسب[‌ ]وکار\s*\|\s*(.+)$/i, async (ctx) => {
         ).run(payout, ctx.from.id);
       })();
 
+      const xpReward = awardActivityXP(ctx.from.id, "shop_sale", xpEventKey(ctx, "shop-sale-legacy"));
       return ctx.reply(
         `✅ فروش انجام شد.\n\n` +
         `📦 کالا: ${item.name}\n` +
         `🔢 تعداد: ${quantity}\n` +
-        `💵 دریافتی: ${payout.toLocaleString("en-US")}`
+        `💵 دریافتی: ${payout.toLocaleString("en-US")}` +
+        xpAwardText(xpReward)
       );
     } catch (e) {
       console.error("Shop sale error:", e);
