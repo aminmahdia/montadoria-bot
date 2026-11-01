@@ -183,6 +183,84 @@ function addXP(telegramId, amount) {
 }
 
 
+function removeXP(telegramId, amount) {
+  const user = getUser(telegramId)
+  if (!user) return null
+
+  const xpAmount = Number(amount)
+  if (!Number.isSafeInteger(xpAmount) || xpAmount <= 0) return null
+
+  const oldXP = Number(user.xp || 0)
+  const newXP = Math.max(0, oldXP - xpAmount)
+  const newLevel = calculateLevelFromXP(newXP)
+
+  db.prepare(`
+    UPDATE users
+    SET xp = ?, level = ?, updated_at = ?
+    WHERE telegram_id = ?
+  `).run(newXP, newLevel, new Date().toISOString(), telegramId)
+
+  return {
+    oldXP,
+    newXP,
+    oldLevel: Number(user.level || 0),
+    newLevel,
+    removedXP: oldXP - newXP,
+    levelDown: newLevel < Number(user.level || 0)
+  }
+}
+
+
+
+function removeLevel(telegramId, amount) {
+  const user = getUser(telegramId)
+  if (!user) return null
+
+  const levelAmount = Number(amount)
+  const oldXP = Number(user.xp || 0)
+
+  if (
+    !Number.isSafeInteger(levelAmount) ||
+    levelAmount <= 0 ||
+    !Number.isSafeInteger(oldXP) ||
+    oldXP < 0
+  ) {
+    return null
+  }
+
+  const oldLevel = calculateLevelFromXP(oldXP)
+  const newLevel = Math.max(1, oldLevel - levelAmount)
+
+  // XP را در بالاترین مقدار مجاز Level جدید نگه می‌داریم.
+  const maxXPForNewLevel = xpRequiredForLevel(newLevel + 1) - 1
+  const newXP = Math.min(oldXP, maxXPForNewLevel)
+  const verifiedLevel = calculateLevelFromXP(newXP)
+
+  if (verifiedLevel !== newLevel) return null
+
+  db.prepare(`
+    UPDATE users
+    SET xp = ?,
+        level = ?,
+        updated_at = ?
+    WHERE telegram_id = ?
+  `).run(
+    newXP,
+    newLevel,
+    new Date().toISOString(),
+    telegramId
+  )
+
+  return {
+    oldXP,
+    newXP,
+    oldLevel,
+    newLevel,
+    removedXP: oldXP - newXP,
+    decreasedLevels: oldLevel - newLevel
+  }
+}
+
 function userButtonName(user) {
   const name = user.display_name || "Unknown"
 
@@ -427,6 +505,9 @@ async function showOwnerPanel(ctx) {
       "/setbank ID AMOUNT",
       "/setxp ID AMOUNT",
       "/setlevel ID LEVEL",
+      "/removexp ID AMOUNT",
+      "/removelevel ID AMOUNT",
+      "/synclevel ID",
       "",
       "مدیریت مالکیت:",
       "/transferowner ID",
@@ -5632,6 +5713,9 @@ bot.hears(/^حذف\s+کسب[‌ ]وکار\s*\|\s*(.+)$/i, async (ctx) => {
         "/setbank ID AMOUNT",
         "/setxp ID AMOUNT",
         "/setlevel ID LEVEL",
+      "/removexp ID AMOUNT",
+      "/removelevel ID AMOUNT",
+      "/synclevel ID",
         "",
         "مدیریت مالکیت:",
         "/transferowner ID",
@@ -6154,6 +6238,242 @@ bot.command("testxp", async (ctx) => {
   // =========================
 
 
+
+    bot.command("removexp", async (ctx) => {
+      syncOwner(ctx.from.id)
+      if (String(ctx.from.id) !== String(OWNER_ID)) {
+        return ctx.reply("⛔ فقط مالک ربات اجازه استفاده دارد.")
+      }
+
+      const parts = ctx.message.text.trim().split(/\\s+/)
+      const id = Number(parts[1])
+      const amount = Number(parts[2])
+
+      if (!Number.isSafeInteger(id) || id <= 0 ||
+          !Number.isSafeInteger(amount) || amount <= 0) {
+        return ctx.reply("فرمت صحیح:\n/removexp USER_ID AMOUNT")
+      }
+
+      if (!getUser(id)) return ctx.reply("❌ کاربر پیدا نشد.")
+
+      const r = removeXP(id, amount)
+      if (!r) return ctx.reply("❌ عملیات انجام نشد.")
+
+      return ctx.reply(
+        "⟡ کسر تجربه انجام شد ⟡\n\n" +
+        `XP قبلی: ${r.oldXP}\n` +
+        `XP کسرشده: ${r.removedXP}\n` +
+        `XP جدید: ${r.newXP}\n` +
+        `Level قبلی: ${r.oldLevel}\n` +
+        `Level جدید: ${r.newLevel}` +
+        (r.levelDown ? "\n⚠️ Level کاهش یافت." : "") +
+        (r.removedXP < amount ? "\nℹ️ موجودی XP تا صفر کاهش یافت." : "")
+      )
+    })
+
+    bot.hears(/^کسر تجربه\s*\|/i, async (ctx) => {
+      syncOwner(ctx.from.id)
+      if (String(ctx.from.id) !== String(OWNER_ID)) {
+        return ctx.reply("⛔ فقط مالک ربات اجازه استفاده دارد.")
+      }
+
+      const parts = ctx.message.text.split("|").map(x => x.trim())
+      const id = Number(parts[1])
+      const amount = Number(parts[2])
+
+      if (parts.length !== 3 || !Number.isSafeInteger(id) || id <= 0 ||
+          !Number.isSafeInteger(amount) || amount <= 0) {
+        return ctx.reply("فرمت صحیح:\nکسر تجربه | USER_ID | AMOUNT")
+      }
+
+      if (!getUser(id)) return ctx.reply("❌ کاربر پیدا نشد.")
+
+      const r = removeXP(id, amount)
+      if (!r) return ctx.reply("❌ عملیات انجام نشد.")
+
+      return ctx.reply(
+        "⟡ کسر تجربه انجام شد ⟡\n\n" +
+        `XP قبلی: ${r.oldXP}\n` +
+        `XP کسرشده: ${r.removedXP}\n` +
+        `XP جدید: ${r.newXP}\n` +
+        `Level قبلی: ${r.oldLevel}\n` +
+        `Level جدید: ${r.newLevel}` +
+        (r.levelDown ? "\n⚠️ Level کاهش یافت." : "") +
+        (r.removedXP < amount ? "\nℹ️ موجودی XP تا صفر کاهش یافت." : "")
+      )
+    })
+
+
+    bot.command("removelevel", async (ctx) => {
+      syncOwner(ctx.from.id)
+
+      const requester = getUser(ctx.from.id)
+      if (!isOwner(requester)) {
+        return ctx.reply("⛔ فقط مالک اجازه استفاده از این دستور را دارد.")
+      }
+
+      const args = (ctx.match || "").trim().split(/\s+/).filter(Boolean)
+      const targetId = Number(args[0])
+      const amount = Number(args[1])
+
+      if (
+        !Number.isSafeInteger(targetId) || targetId <= 0 ||
+        !Number.isSafeInteger(amount) || amount <= 0
+      ) {
+        return ctx.reply(
+          "فرمت صحیح:\n/removelevel USER_ID AMOUNT\n\n" +
+          "معادل فارسی:\nکسر لول | USER_ID | AMOUNT"
+        )
+      }
+
+      const target = getUser(targetId)
+      if (!target) return ctx.reply("❌ کاربر پیدا نشد.")
+
+      const result = removeLevel(targetId, amount)
+      if (!result) return ctx.reply("❌ کاهش Level انجام نشد.")
+
+      return ctx.reply(
+        "⟡ کاهش Level انجام شد ⟡\n\n" +
+        `👤 کاربر: ${target.display_name}\n` +
+        `🎖 Level قبلی: ${result.oldLevel}\n` +
+        `🎖 Level جدید: ${result.newLevel}\n` +
+        `✨ XP قبلی: ${result.oldXP}\n` +
+        `✨ XP جدید: ${result.newXP}\n` +
+        `➖ XP کسرشده: ${result.removedXP}` +
+        (result.decreasedLevels === 0
+          ? "\n\nℹ️ کاربر از قبل در Level 1 بود."
+          : "")
+      )
+    })
+
+    bot.hears(/^کسر لول\s*\|/i, async (ctx) => {
+      syncOwner(ctx.from.id)
+
+      const requester = getUser(ctx.from.id)
+      if (!isOwner(requester)) {
+        return ctx.reply("⛔ فقط مالک اجازه استفاده از این دستور را دارد.")
+      }
+
+      const parts = ctx.message.text.split("|").map(x => x.trim())
+      const targetId = Number(parts[1])
+      const amount = Number(parts[2])
+
+      if (
+        parts.length !== 3 ||
+        !Number.isSafeInteger(targetId) || targetId <= 0 ||
+        !Number.isSafeInteger(amount) || amount <= 0
+      ) {
+        return ctx.reply("فرمت صحیح:\nکسر لول | USER_ID | AMOUNT")
+      }
+
+      const target = getUser(targetId)
+      if (!target) return ctx.reply("❌ کاربر پیدا نشد.")
+
+      const result = removeLevel(targetId, amount)
+      if (!result) return ctx.reply("❌ کاهش Level انجام نشد.")
+
+      return ctx.reply(
+        "⟡ کاهش Level انجام شد ⟡\n\n" +
+        `👤 کاربر: ${target.display_name}\n` +
+        `🎖 Level قبلی: ${result.oldLevel}\n` +
+        `🎖 Level جدید: ${result.newLevel}\n` +
+        `✨ XP قبلی: ${result.oldXP}\n` +
+        `✨ XP جدید: ${result.newXP}\n` +
+        `➖ XP کسرشده: ${result.removedXP}` +
+        (result.decreasedLevels === 0
+          ? "\n\nℹ️ کاربر از قبل در Level 1 بود."
+          : "")
+      )
+    })
+
+    bot.command("synclevel", async (ctx) => {
+      syncOwner(ctx.from.id)
+
+      const requester = getUser(ctx.from.id)
+      if (!isOwner(requester)) {
+        return ctx.reply("⛔ فقط مالک اجازه استفاده از این دستور را دارد.")
+      }
+
+      const targetId = Number((ctx.match || "").trim())
+      if (!Number.isSafeInteger(targetId) || targetId <= 0) {
+        return ctx.reply("فرمت صحیح:\n/synclevel USER_ID")
+      }
+
+      const target = getUser(targetId)
+      if (!target) return ctx.reply("❌ کاربر پیدا نشد.")
+
+      const xp = Number(target.xp || 0)
+      if (!Number.isSafeInteger(xp) || xp < 0) {
+        return ctx.reply("❌ XP ذخیره‌شده کاربر معتبر نیست.")
+      }
+
+      const oldLevel = Number(target.level || 1)
+      const newLevel = calculateLevelFromXP(xp)
+
+      db.prepare(`
+        UPDATE users
+        SET level = ?,
+            updated_at = ?
+        WHERE telegram_id = ?
+      `).run(newLevel, new Date().toISOString(), targetId)
+
+      return ctx.reply(
+        "⟡ همگام‌سازی XP و Level ⟡\n\n" +
+        `👤 کاربر: ${target.display_name}\n` +
+        `✨ XP: ${xp}\n` +
+        `🎖 Level قبلی: ${oldLevel}\n` +
+        `🎖 Level هماهنگ‌شده: ${newLevel}` +
+        (oldLevel === newLevel
+          ? "\n\n✅ اطلاعات از قبل هماهنگ بود."
+          : "\n\n✅ Level بر اساس XP اصلاح شد.")
+      )
+    })
+
+    bot.hears(/^همگام(?:‌|\s)?سازی\s*(?:لول|level)(?:\s*(?:و|&)\s*(?:xp|تجربه))?\s*\|/i, async (ctx) => {
+      syncOwner(ctx.from.id)
+
+      const requester = getUser(ctx.from.id)
+      if (!isOwner(requester)) {
+        return ctx.reply("⛔ فقط مالک اجازه استفاده از این دستور را دارد.")
+      }
+
+      const parts = ctx.message.text.split("|").map(x => x.trim())
+      const targetId = Number(parts[1])
+
+      if (parts.length !== 2 || !Number.isSafeInteger(targetId) || targetId <= 0) {
+        return ctx.reply("فرمت صحیح:\nهمگام‌سازی لول و XP | USER_ID")
+      }
+
+      const target = getUser(targetId)
+      if (!target) return ctx.reply("❌ کاربر پیدا نشد.")
+
+      const xp = Number(target.xp || 0)
+      if (!Number.isSafeInteger(xp) || xp < 0) {
+        return ctx.reply("❌ XP ذخیره‌شده کاربر معتبر نیست.")
+      }
+
+      const oldLevel = Number(target.level || 1)
+      const newLevel = calculateLevelFromXP(xp)
+
+      db.prepare(`
+        UPDATE users
+        SET level = ?,
+            updated_at = ?
+        WHERE telegram_id = ?
+      `).run(newLevel, new Date().toISOString(), targetId)
+
+      return ctx.reply(
+        "⟡ همگام‌سازی XP و Level ⟡\n\n" +
+        `👤 کاربر: ${target.display_name}\n` +
+        `✨ XP: ${xp}\n` +
+        `🎖 Level قبلی: ${oldLevel}\n` +
+        `🎖 Level هماهنگ‌شده: ${newLevel}` +
+        (oldLevel === newLevel
+          ? "\n\n✅ اطلاعات از قبل هماهنگ بود."
+          : "\n\n✅ Level بر اساس XP اصلاح شد.")
+      )
+    })
+
     bot.command("setlevel", async (ctx) => {
     syncOwner(ctx.from.id)
 
@@ -6179,7 +6499,7 @@ bot.command("testxp", async (ctx) => {
       return
     }
 
-    if (!Number.isInteger(level) || level < 1) {
+    if (!Number.isInteger(level) || level < 1 || level > 1001) {
       await ctx.reply("❌ Level نامعتبر است.")
       return
     }
@@ -6191,18 +6511,25 @@ bot.command("testxp", async (ctx) => {
       return
     }
 
+    const synchronizedXP = xpRequiredForLevel(level)
+
     db.prepare(`
       UPDATE users
       SET level = ?,
+          xp = ?,
           updated_at = ?
       WHERE telegram_id = ?
     `).run(
       level,
+      synchronizedXP,
       new Date().toISOString(),
       targetId
     )
 
-    await ctx.reply(`✅ Level = ${level}`)
+    await ctx.reply(
+      `✅ Level کاربر روی ${level} تنظیم شد.\n` +
+      `✨ XP هماهنگ‌شده: ${synchronizedXP}`
+    )
   })
 
   // =========================
@@ -7364,6 +7691,9 @@ bot.command("testxp", async (ctx) => {
           "",
           `/setxp ${target.telegram_id} AMOUNT`,
           `/setlevel ${target.telegram_id} LEVEL`,
+          `/removexp ${target.telegram_id} AMOUNT`,
+          `/removelevel ${target.telegram_id} AMOUNT`,
+          `/synclevel ${target.telegram_id}`,
         ].join("\n"),
         {
           reply_markup: {
