@@ -92,6 +92,19 @@ db.exec(`
 
 const now = () => Math.floor(Date.now() / 1000);
 
+function timestampToUnix(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  if (typeof value === "number" && Number.isFinite(value)) return Math.floor(value > 1e12 ? value / 1000 : value);
+  const raw = String(value).trim();
+  if (/^[+-]?\d+(?:\.\d+)?$/.test(raw)) {
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+    return Math.floor(numeric > 1e12 ? numeric / 1000 : numeric);
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
+}
+
 function isOwner(ctx) {
   return Boolean(OWNER_ID && ctx.from?.id === OWNER_ID);
 }
@@ -333,7 +346,7 @@ async function report(botOrApi, text) {
   }
 }
 
-async function restrictAcrossGroups(api, telegramId, username = "") {
+async function restrictAcrossGroups(api, telegramId, username = "", durationMinutes = RESTRICTION_MINUTES, reason = "") {
   const groups = db.prepare(`
     SELECT chat_id, title
     FROM rp_groups
@@ -346,8 +359,8 @@ async function restrictAcrossGroups(api, telegramId, username = "") {
   }
 
   const untilUnix =
-    Math.floor(Date.now() / 1000) + RESTRICTION_MINUTES * 60;
-  const restrictedUntil = new Date(untilUnix * 1000).toISOString();
+    Math.floor(Date.now() / 1000) + durationMinutes * 60;
+  const restrictedUntil = String(untilUnix);
   const successful = [];
   const failed = [];
 
@@ -416,7 +429,7 @@ async function restrictAcrossGroups(api, telegramId, username = "") {
     api,
     `🔇 <b>محدودیت نقش‌آفرینی اعمال شد</b>\n` +
     `شناسه کاربر: <code>${telegramId}</code>\n` +
-    `مدت: ${RESTRICTION_MINUTES} دقیقه\n` +
+    `مدت: ${durationMinutes} دقیقه\n` +
     `گروه‌های موفق: ${successful.length}/${groups.length}\n` +
     (failed.length
       ? `گروه‌های ناموفق: ${failed.map(g =>
@@ -428,34 +441,24 @@ async function restrictAcrossGroups(api, telegramId, username = "") {
 
 async function restoreExpiredRestrictions(bot) {
   const currentTime = now();
-
-  const expired = db.prepare(`
-    SELECT id, telegram_id
-    FROM observer_restrictions
+  const pending = db.prepare(`
+    SELECT id, restricted_until FROM observer_restrictions
     WHERE restored_at IS NULL
-      AND restricted_until <= ?
-  `).all(currentTime);
-
+  `).all();
+  const expired = pending.filter(row => {
+    const until = timestampToUnix(row.restricted_until);
+    return until > 0 && until <= currentTime;
+  });
   if (!expired.length) return;
-
   const markRestored = db.prepare(`
-    UPDATE observer_restrictions
-    SET restored_at = ?
+    UPDATE observer_restrictions SET restored_at = ?
     WHERE id = ? AND restored_at IS NULL
   `);
-
   let restoredCount = 0;
-
-  for (const item of expired) {
-    const result = markRestored.run(currentTime, item.id);
-    restoredCount += result.changes;
-  }
-
+  for (const item of expired) restoredCount += markRestored.run(currentTime, item.id).changes;
   if (restoredCount) {
-    await report(
-      bot.api,
-      `✅ مدت محدودیت ${restoredCount} مورد به پایان رسید. ` +
-      `تلگرام محدودیت زمان‌دار را به‌صورت خودکار منقضی می‌کند.`
+    await report(bot.api,
+      `✅ مدت محدودیت ${restoredCount} مورد به پایان رسید. تلگرام محدودیت زمان‌دار را به‌صورت خودکار منقضی می‌کند.`
     );
   }
 }
@@ -501,13 +504,13 @@ async function warn(ctx, reason) {
 
 
   if (total >= WARNING_LIMIT) {
-    const existingRestriction = db.prepare(`
-      SELECT 1 FROM observer_restrictions
+    const activeRestrictionRows = db.prepare(`
+      SELECT restricted_until FROM observer_restrictions
       WHERE telegram_id = ? AND restored_at IS NULL
-        AND restricted_until > ?
-      LIMIT 1
-    `).get(user.id, now());
-
+    `).all(user.id);
+    const existingRestriction = activeRestrictionRows.some(row =>
+      timestampToUnix(row.restricted_until) > now()
+    );
     if (!existingRestriction) {
       await restrictAcrossGroups(
         ctx.api,
@@ -618,6 +621,22 @@ function updateNeed(telegramId, field) {
     SET ${column} = ?, updated_at = ?
     WHERE telegram_id = ?
   `).run(now(), now(), telegramId);
+}
+
+function clearNeedWarnings(telegramId, needType) {
+  const allowed = { food: "last_food_warning_at", sleep: "last_sleep_warning_at", blood: "last_blood_warning_at" };
+  const column = allowed[needType];
+  if (!column) return;
+  const currentTime = now();
+  db.prepare(`
+    UPDATE observer_need_warnings SET active = 0, cleared_at = ?
+    WHERE telegram_id = ? AND need_type = ? AND active = 1
+  `).run(currentTime, telegramId, needType);
+  ensureNeeds(telegramId);
+  db.prepare(`
+    UPDATE observer_needs SET ${column} = 0, updated_at = ?
+    WHERE telegram_id = ?
+  `).run(currentTime, telegramId);
 }
 
 export function registerObserver(bot) {
@@ -1112,112 +1131,163 @@ export function registerObserver(bot) {
   };
 
 
-  // MONTADORIA_FOOD_REMINDER_V1
-  try {
-    db.exec("ALTER TABLE observer_needs ADD COLUMN last_food_warning_at INTEGER");
-  } catch (e) {
-    if (!String(e.message).includes("duplicate column")) throw e;
+  // MONTADORIA_NEEDS_REMINDER_V2
+  for (const column of ["last_food_warning_at", "last_sleep_warning_at", "last_blood_warning_at"]) {
+    try {
+      db.exec(`ALTER TABLE observer_needs ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+    } catch (error) {
+      if (!String(error.message).toLowerCase().includes("duplicate column")) throw error;
+    }
   }
 
-  const foodTimestampToUnix = value => {
-    if (value === null || value === undefined || value === "") return 0;
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS observer_need_warnings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      telegram_id INTEGER NOT NULL,
+      need_type TEXT NOT NULL,
+      chat_id INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      cleared_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_observer_need_warnings_active
+    ON observer_need_warnings (telegram_id, active);
+  `);
 
-    const raw = String(value).trim();
-
-    if (/^[+-]?\d+(?:\.\d+)?$/.test(raw)) {
-      const numeric = Number(raw);
-      if (!Number.isFinite(numeric) || numeric <= 0) return 0;
-      return Math.floor(numeric > 1e12 ? numeric / 1000 : numeric);
-    }
-
-    const parsed = Date.parse(raw);
-    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
-  };
-
-  let foodReminderCheckRunning = false;
-
-  const checkFoodReminders = async () => {
-    if (foodReminderCheckRunning) return;
-    foodReminderCheckRunning = true;
-
+  let needReminderCheckRunning = false;
+  const checkNeedReminders = async () => {
+    if (needReminderCheckRunning) return;
+    needReminderCheckRunning = true;
     try {
-      const currentTime = Math.floor(Date.now() / 1000);
-
+      const currentTime = now();
       const people = db.prepare(`
-        SELECT
-          n.telegram_id,
-          n.last_food_at,
-          n.last_food_warning_at,
-          m.chat_id
-        FROM observer_needs n
-        INNER JOIN observer_active_map m
-          ON m.telegram_id = n.telegram_id
-        WHERE n.last_food_at IS NOT NULL
+        SELECT m.telegram_id, m.chat_id, m.entered_at,
+          m.username AS map_username,
+          n.last_food_at, n.last_sleep_at, n.last_blood_at,
+          n.last_food_warning_at, n.last_sleep_warning_at, n.last_blood_warning_at,
+          r.race, r.updated_at AS race_updated_at,
+          u.display_name, u.username AS user_username
+        FROM observer_active_map m
+        LEFT JOIN observer_needs n ON n.telegram_id = m.telegram_id
+        LEFT JOIN observer_races r ON r.telegram_id = m.telegram_id
+        LEFT JOIN users u ON u.telegram_id = m.telegram_id
       `).all();
 
-      for (const person of people) {
+      const warnForNeed = async (person, needType, baseline, intervalSeconds, detail, warningColumn) => {
         const telegramId = Number(person.telegram_id);
         const chatId = Number(person.chat_id);
-        const lastFoodAt = foodTimestampToUnix(person.last_food_at);
-        const lastWarningAt = foodTimestampToUnix(
-          person.last_food_warning_at
-        );
+        const lastWarningAt = timestampToUnix(person[warningColumn]);
+        if (!baseline || currentTime - baseline < intervalSeconds) return;
+        if (lastWarningAt > 0 && currentTime - lastWarningAt < 4 * 3600) return;
 
-        // هشدار اول: ۸ ساعت پس از آخرین غذای ثبت‌شده
-        if (!lastFoodAt || currentTime - lastFoodAt < 8 * 3600) {
-          continue;
-        }
-
-        // هشدارهای بعدی: هر ۴ ساعت
-        if (
-          lastWarningAt > 0 &&
-          currentTime - lastWarningAt < 4 * 3600
-        ) {
-          continue;
-        }
+        const displayName = person.display_name ||
+          (person.user_username ? `@${person.user_username}` : "") ||
+          (person.map_username ? `@${person.map_username}` : "") || "بازیکن";
+        const mention = `<a href="tg://user?id=${telegramId}">${escapeHtml(displayName)}</a>`;
+        // پیام عمومی نوع نیاز و نژاد را فاش نمی‌کند.
+        const groupMessage =
+          "⚠️ <b>یادآوری وضعیت شخصیت</b>\n\n" +
+          `${mention}، زمان رسیدگی به یکی از نیازهای دوره‌ای شخصیتت گذشته است. لطفاً وضعیت مربوطه را ثبت کن.`;
 
         try {
-          await bot.api.sendMessage(
-            chatId,
-            "🍽️ <b>یادآوری غذا</b>\n\n" +
-            `شناسه کاربر: <code>${telegramId}</code>\n` +
-            "مدت زیادی از آخرین غذای این شخصیت گذشته است.\n" +
-            "برای ثبت غذا، در همین گروه از <code>#خوردن</code> استفاده کن.",
-            { parse_mode: "HTML" }
-          );
-
-          db.prepare(`
-            UPDATE observer_needs
-            SET last_food_warning_at = ?, updated_at = ?
-            WHERE telegram_id = ?
-          `).run(currentTime, currentTime, telegramId);
-
-          await report(
-            bot.api,
-            `🍽️ هشدار غذا ارسال شد | شناسه: ${telegramId} | گروه: ${chatId}`
-          );
+          await bot.api.sendMessage(chatId, groupMessage, {
+            parse_mode: "HTML", disable_web_page_preview: true
+          });
         } catch (error) {
-          console.error(
-            "ارسال یادآوری غذا ناموفق بود:",
-            telegramId,
-            chatId,
-            error.message || error
+          console.error("ارسال اخطار نیاز ناموفق بود:", telegramId, needType, error.message || error);
+          return;
+        }
+
+        // جزئیات خون فقط در پیام خصوصی یادآوری خون‌آشام موجود ارسال می‌شود.
+        if (needType !== "blood") {
+          try {
+            await bot.api.sendMessage(
+              telegramId,
+              detail + "\n\nوضعیت را در گروهی که با #ورود در آن حضور داری ثبت کن."
+            );
+          } catch (error) {
+            console.warn("ارسال جزئیات خصوصی نیاز ممکن نشد:", telegramId, needType, error.message || error);
+          }
+        }
+
+        ensureNeeds(telegramId);
+        db.prepare(`
+          INSERT INTO observer_need_warnings
+            (telegram_id, need_type, chat_id, reason, active, created_at)
+          VALUES (?, ?, ?, ?, 1, ?)
+        `).run(telegramId, needType, chatId, "عدم رسیدگی به نیاز دوره‌ای شخصیت", currentTime);
+        db.prepare(`
+          UPDATE observer_needs SET ${warningColumn} = ?, updated_at = ?
+          WHERE telegram_id = ?
+        `).run(currentTime, currentTime, telegramId);
+
+        const activeNeedWarnings = db.prepare(`
+          SELECT COUNT(*) AS total FROM observer_need_warnings
+          WHERE telegram_id = ? AND active = 1
+        `).get(telegramId).total;
+        await report(bot.api,
+          `⚠️ اخطار نیاز دوره‌ای ثبت شد | کاربر: ${telegramId} | گروه: ${chatId} | اخطار فعال نیازها: ${activeNeedWarnings}/${WARNING_LIMIT}`
+        );
+
+        if (activeNeedWarnings >= WARNING_LIMIT) {
+          const restrictionRows = db.prepare(`
+            SELECT restricted_until FROM observer_restrictions
+            WHERE telegram_id = ? AND restored_at IS NULL
+          `).all(telegramId);
+          const latestUntil = restrictionRows.reduce(
+            (latest, row) => Math.max(latest, timestampToUnix(row.restricted_until)), 0
           );
+          const requiredUntil = currentTime + 120 * 60;
+          if (latestUntil < requiredUntil) {
+            try {
+              await bot.api.sendMessage(chatId,
+                `⛔ ${mention} به حد ${WARNING_LIMIT} اخطار فعال نیازهای شخصیت رسیده است. محدودیت ارسال پیام به مدت ۲ ساعت در گروه‌های نقش‌آفرینی اعمال می‌شود.`,
+                { parse_mode: "HTML" }
+              );
+            } catch {}
+            await restrictAcrossGroups(
+              bot.api, telegramId,
+              person.user_username || person.map_username || "",
+              120,
+              "عدم رسیدگی به نیازهای دوره‌ای شخصیت"
+            );
+          }
+        }
+      };
+
+      for (const person of people) {
+        const enteredAt = timestampToUnix(person.entered_at);
+        const foodAt = timestampToUnix(person.last_food_at) || enteredAt;
+        const sleepAt = timestampToUnix(person.last_sleep_at) || enteredAt;
+        await warnForNeed(person, "food", foodAt, 8 * 3600,
+          "🍽️ یادآوری غذا\nزمان ثبت غذای شخصیتت رسیده است. در گروه مپ از هشتگ #خوردن استفاده کن.",
+          "last_food_warning_at");
+        await warnForNeed(person, "sleep", sleepAt, 24 * 3600,
+          "🌙 یادآوری خواب\nزمان ثبت خواب شخصیتت رسیده است. در گروه مپ از هشتگ #خواب استفاده کن.",
+          "last_sleep_warning_at");
+
+        if (person.race === "خون‌آشام") {
+          const bloodAt = timestampToUnix(person.last_blood_at) ||
+            timestampToUnix(person.race_updated_at);
+          await warnForNeed(person, "blood", bloodAt, 12 * 3600,
+            "🩸 یادآوری نیاز شخصیت\nزمان نوشیدن خون رسیده است. پس از انجام آن، در گروه مپ هشتگ #خون را ثبت کن.",
+            "last_blood_warning_at");
         }
       }
     } finally {
-      foodReminderCheckRunning = false;
+      needReminderCheckRunning = false;
     }
   };
 
-  // بررسی هر ۱۰ دقیقه؛ خود هشدارها با فاصله چندساعته ارسال می‌شوند.
-  const foodReminderTimer = setInterval(() => {
-    checkFoodReminders().catch(console.error);
-  }, 10 * 60 * 1000);
-
-  foodReminderTimer.unref?.();
-  checkFoodReminders().catch(console.error);
-  // END MONTADORIA_FOOD_REMINDER_V1
+  const needReminderTimer = setInterval(() => {
+    checkNeedReminders().catch(error =>
+      console.error("خطا در بررسی نیازهای شخصیت:", error)
+    );
+  }, 60_000);
+  needReminderTimer.unref?.();
+  checkNeedReminders().catch(console.error);
+  // END MONTADORIA_NEEDS_REMINDER_V2
 
   const vampireReminderTimer = setInterval(() => {
     checkVampireBloodReminders().catch(error =>
@@ -1607,7 +1677,7 @@ export function registerObserver(bot) {
     return ctx.reply(
       `⚙️ <b>تنظیمات ناظر مونتادوریا</b>\n\n` +
       `حد اخطار: ${WARNING_LIMIT}\n` +
-      `مدت محدودیت: ${RESTRICTION_MINUTES} دقیقه\n` +
+      `مدت محدودیت: ${durationMinutes} دقیقه\n` +
       `گروه گزارش: ${OBSERVER_GROUP_ID ?? "تنظیم نشده"}\n` +
       `گروه‌های فعال: ${groups.length}\n` +
       `اخطارهای فعال: ${activeWarnings}\n\n` +
@@ -1784,6 +1854,7 @@ if (
         SET last_blood_at = ?, updated_at = ?
         WHERE telegram_id = ?
       `).run(bloodTime, bloodTime, user.id);
+      clearNeedWarnings(user.id, "blood");
 
       db.prepare(`
         UPDATE observer_races
@@ -1814,12 +1885,20 @@ if (
       }
 
       if (!activeMap) {
+        const enteredAt = now();
         db.prepare(`
           INSERT INTO observer_active_map
             (telegram_id, chat_id, entered_at, username)
           VALUES (?, ?, ?, ?)
-        `).run(user.id, ctx.chat.id, now(), user.username || null);
-
+        `).run(user.id, ctx.chat.id, enteredAt, user.username || null);
+        ensureNeeds(user.id);
+        db.prepare(`
+          UPDATE observer_needs
+          SET last_food_at = COALESCE(last_food_at, ?),
+              last_sleep_at = COALESCE(last_sleep_at, ?),
+              updated_at = ?
+          WHERE telegram_id = ?
+        `).run(enteredAt, enteredAt, enteredAt, user.id);
         await report(ctx,
           `🚪 ورود به مپ | کاربر: ${user.id} | گروه: ${ctx.chat.id}`
         );
@@ -1875,7 +1954,7 @@ if (
 
     // ثبت خودکار رویدادهای غذا و خواب
     const hasNeedTag = tag => text.split(/\r?\n/).some(
-      line => line.trim().split(/\\s+/)[0] === tag
+      line => line.trim().split(/\s+/)[0] === tag
     );
 
     // تاریخچه غذا برای محدودیت هر ۸ ساعت یک‌بار
@@ -1907,6 +1986,7 @@ if (
         `).run(user.id, currentTime);
 
         updateNeed(user.id, "food");
+        clearNeedWarnings(user.id, "food");
 
         await report(ctx,
           `🍽️ ثبت غذا | کاربر: ${user.id} | فاصله مجاز: ۸ ساعت | گروه: ${ctx.chat.id}`
@@ -1949,6 +2029,8 @@ if (
           currentTime,
           user.id
         );
+
+        clearNeedWarnings(user.id, "sleep");
 
         await report(ctx,
           `🌙 ثبت خواب | کاربر: ${user.id} | مدت: ${sleepHours} ساعت | گروه: ${ctx.chat.id}`
