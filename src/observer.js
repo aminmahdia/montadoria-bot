@@ -86,9 +86,22 @@ db.exec(`
     restricted_until TEXT NOT NULL,
     restored_at TEXT,
     created_at TEXT NOT NULL,
-    affected_groups TEXT NOT NULL DEFAULT '[]'
+    affected_groups TEXT NOT NULL DEFAULT '[]',
+    reason TEXT NOT NULL DEFAULT '',
+    trigger_warnings TEXT NOT NULL DEFAULT '[]'
   );
 `);
+
+for (const [column, definition] of [
+  ["reason", "TEXT NOT NULL DEFAULT ''"],
+  ["trigger_warnings", "TEXT NOT NULL DEFAULT '[]'"]
+]) {
+  try {
+    db.exec(`ALTER TABLE observer_restrictions ADD COLUMN ${column} ${definition}`);
+  } catch (error) {
+    if (!String(error.message).toLowerCase().includes("duplicate column")) throw error;
+  }
+}
 
 const now = () => Math.floor(Date.now() / 1000);
 
@@ -412,17 +425,29 @@ async function restrictAcrossGroups(api, telegramId, username = "", durationMinu
     return;
   }
 
+  const triggerWarnings = reason === "عدم رسیدگی به نیازهای دوره‌ای شخصیت"
+    ? []
+    : db.prepare(`
+        SELECT id, chat_id, message_id, reason
+        FROM observer_warnings
+        WHERE telegram_id = ? AND active = 1 AND message_id IS NOT NULL
+        ORDER BY id DESC
+        LIMIT ?
+      `).all(telegramId, WARNING_LIMIT);
+
   db.prepare(`
     INSERT INTO observer_restrictions
       (telegram_id, username, restricted_until, restored_at,
-       created_at, affected_groups)
-    VALUES (?, ?, ?, NULL, ?, ?)
+       created_at, affected_groups, reason, trigger_warnings)
+    VALUES (?, ?, ?, NULL, ?, ?, ?, ?)
   `).run(
     telegramId,
     username || null,
     restrictedUntil,
     now(),
-    JSON.stringify(successful)
+    JSON.stringify(successful),
+    reason || `رسیدن به سقف ${WARNING_LIMIT} اخطار فعال نقش‌آفرینی`,
+    JSON.stringify(triggerWarnings)
   );
 
   await report(
@@ -441,24 +466,112 @@ async function restrictAcrossGroups(api, telegramId, username = "", durationMinu
 
 async function restoreExpiredRestrictions(bot) {
   const currentTime = now();
+
   const pending = db.prepare(`
-    SELECT id, restricted_until FROM observer_restrictions
+    SELECT id, telegram_id, username, restricted_until,
+           created_at, affected_groups, reason, trigger_warnings
+    FROM observer_restrictions
     WHERE restored_at IS NULL
   `).all();
-  const expired = pending.filter(row => {
-    const until = timestampToUnix(row.restricted_until);
-    return until > 0 && until <= currentTime;
-  });
-  if (!expired.length) return;
+
   const markRestored = db.prepare(`
     UPDATE observer_restrictions SET restored_at = ?
     WHERE id = ? AND restored_at IS NULL
   `);
-  let restoredCount = 0;
-  for (const item of expired) restoredCount += markRestored.run(currentTime, item.id).changes;
-  if (restoredCount) {
+
+  const formatTime = value => {
+    const unix = timestampToUnix(value);
+    return unix
+      ? new Date(unix * 1000).toLocaleString("fa-IR", {
+          timeZone: "Asia/Tehran",
+          dateStyle: "short",
+          timeStyle: "short"
+        })
+      : "نامشخص";
+  };
+
+  for (const item of pending) {
+    const untilUnix = timestampToUnix(item.restricted_until);
+    if (!untilUnix || untilUnix > currentTime) continue;
+
+    if (!markRestored.run(currentTime, item.id).changes) continue;
+
+    const startUnix = timestampToUnix(item.created_at);
+    const duration = startUnix > 0
+      ? `${Math.max(1, Math.round((untilUnix - startUnix) / 60))} دقیقه`
+      : "نامشخص";
+
+    let affectedGroups = [];
+    try {
+      const parsed = JSON.parse(item.affected_groups || "[]");
+      if (Array.isArray(parsed)) affectedGroups = parsed;
+    } catch {}
+
+    const groupLines = [];
+    for (const group of affectedGroups) {
+      const groupId = typeof group === "object" ? group.chat_id : group;
+      if (groupId === undefined || groupId === null) continue;
+
+      const label = await reportGroupLabel(bot.api, groupId);
+      groupLines.push(
+        `• ${label} — شناسه گروه: <code>${escapeHtml(groupId)}</code>`
+      );
+    }
+
+    let triggerWarnings = [];
+    try {
+      const parsed = JSON.parse(item.trigger_warnings || "[]");
+      if (Array.isArray(parsed)) triggerWarnings = parsed;
+    } catch {}
+
+    const warningLines = [];
+    for (const warning of triggerWarnings) {
+      const groupId = Number(warning.chat_id);
+      const groupLabel = await reportGroupLabel(bot.api, groupId);
+      const messageId = Number(warning.message_id);
+
+      let messageUrl = "";
+      try {
+        const chat = await bot.api.getChat(groupId);
+        if (chat.username) {
+          messageUrl =
+            `https://t.me/${encodeURIComponent(chat.username)}/${messageId}`;
+        }
+      } catch {}
+
+      if (!messageUrl && /^-100\d+$/.test(String(groupId))) {
+        messageUrl =
+          `https://t.me/c/${String(groupId).slice(4)}/${messageId}`;
+      }
+
+      const messageReference = messageUrl
+        ? `<a href="${escapeHtml(messageUrl)}">مشاهده پیام اخطار</a>`
+        : `شناسه پیام: <code>${messageId}</code>`;
+
+      warningLines.push(
+        `• ${groupLabel} — ${escapeHtml(warning.reason || "اخطار نقش‌آفرینی")} — ${messageReference}`
+      );
+    }
+
+    const reason = String(item.reason || "").trim() ||
+      "علت این محدودیت در نسخه قبلی ذخیره نشده است.";
+
     await report(bot.api,
-      `✅ مدت محدودیت ${restoredCount} مورد به پایان رسید. تلگرام محدودیت زمان‌دار را به‌صورت خودکار منقضی می‌کند.`
+      `✅ <b>پایان محدودیت نقش‌آفرینی</b>\n` +
+      `کد محدودیت: <code>${item.id}</code>\n` +
+      `کاربر: ${item.telegram_id}\n` +
+      `شناسه تلگرام: <code>${item.telegram_id}</code>\n` +
+      `علت محدودیت: ${escapeHtml(reason)}\n` +
+      `مدت محدودیت: ${duration}\n` +
+      `زمان شروع: ${formatTime(item.created_at)}\n` +
+      `زمان پایان: ${formatTime(item.restricted_until)}\n\n` +
+      `<b>گروه‌های مشمول:</b>\n` +
+      (groupLines.length ? groupLines.join("\n") : "گروهی ثبت نشده است.") +
+      `\n\n<b>پیام‌های اخطار مرتبط:</b>\n` +
+      (warningLines.length
+        ? warningLines.join("\n")
+        : "برای این محدودیت پیام اخطار جداگانه‌ای ذخیره نشده است.") +
+      `\n\nℹ️ تلگرام محدودیت زمان‌دار را به‌صورت خودکار منقضی کرده است.`
     );
   }
 }
