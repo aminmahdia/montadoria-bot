@@ -1185,30 +1185,26 @@ export function registerObserver(bot) {
           (person.user_username ? `@${person.user_username}` : "") ||
           (person.map_username ? `@${person.map_username}` : "") || "بازیکن";
         const mention = `<a href="tg://user?id=${telegramId}">${escapeHtml(displayName)}</a>`;
-        // پیام عمومی نوع نیاز و نژاد را فاش نمی‌کند.
-        const groupMessage =
-          "⚠️ <b>یادآوری وضعیت شخصیت</b>\n\n" +
-          `${mention}، زمان رسیدگی به یکی از نیازهای دوره‌ای شخصیتت گذشته است. لطفاً وضعیت مربوطه را ثبت کن.`;
+        const reminderDetail = String(detail || "")
+          .split(/\r?\n/)
+          .slice(1)
+          .join("\n")
+          .replace("در گروه مپ", "در همین گروه مپ");
+
+        const groupMessage = needType === "food"
+          ? `🍽️ <b>یادآوری غذا</b>\n\n${mention}، ${reminderDetail}`
+          : needType === "sleep"
+            ? `🌙 <b>یادآوری خواب</b>\n\n${mention}، ${reminderDetail}`
+            : `⚠️ <b>یادآوری وضعیت شخصیت</b>\n\n${mention}، زمان رسیدگی به یکی از نیازهای دوره‌ای شخصیتت گذشته است. لطفاً وضعیت مربوطه را ثبت کن.`;
 
         try {
           await bot.api.sendMessage(chatId, groupMessage, {
-            parse_mode: "HTML", disable_web_page_preview: true
+            parse_mode: "HTML",
+            disable_web_page_preview: true
           });
         } catch (error) {
-          console.error("ارسال اخطار نیاز ناموفق بود:", telegramId, needType, error.message || error);
+          console.error("ارسال یادآوری نیاز ناموفق بود:", telegramId, needType, error.message || error);
           return;
-        }
-
-        // جزئیات خون فقط در پیام خصوصی یادآوری خون‌آشام موجود ارسال می‌شود.
-        if (needType !== "blood") {
-          try {
-            await bot.api.sendMessage(
-              telegramId,
-              detail + "\n\nوضعیت را در گروهی که با #ورود در آن حضور داری ثبت کن."
-            );
-          } catch (error) {
-            console.warn("ارسال جزئیات خصوصی نیاز ممکن نشد:", telegramId, needType, error.message || error);
-          }
         }
 
         ensureNeeds(telegramId);
