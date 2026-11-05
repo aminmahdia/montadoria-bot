@@ -57,7 +57,8 @@ db.exec(`
     reason TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    cleared_at TEXT
+    cleared_at TEXT,
+    warning_type TEXT NOT NULL DEFAULT 'rp'
   );
 
   CREATE TABLE IF NOT EXISTS observer_username_history (
@@ -88,19 +89,27 @@ db.exec(`
     created_at TEXT NOT NULL,
     affected_groups TEXT NOT NULL DEFAULT '[]',
     reason TEXT NOT NULL DEFAULT '',
-    trigger_warnings TEXT NOT NULL DEFAULT '[]'
+    trigger_warnings TEXT NOT NULL DEFAULT '[]',
+    restriction_type TEXT NOT NULL DEFAULT 'rp'
   );
 `);
 
 for (const [column, definition] of [
   ["reason", "TEXT NOT NULL DEFAULT ''"],
-  ["trigger_warnings", "TEXT NOT NULL DEFAULT '[]'"]
+  ["trigger_warnings", "TEXT NOT NULL DEFAULT '[]'"],
+  ["restriction_type", "TEXT NOT NULL DEFAULT 'rp'"]
 ]) {
   try {
     db.exec(`ALTER TABLE observer_restrictions ADD COLUMN ${column} ${definition}`);
   } catch (error) {
     if (!String(error.message).toLowerCase().includes("duplicate column")) throw error;
   }
+}
+
+try {
+  db.exec("ALTER TABLE observer_warnings ADD COLUMN warning_type TEXT NOT NULL DEFAULT 'rp'");
+} catch (error) {
+  if (!String(error.message).toLowerCase().includes("duplicate column")) throw error;
 }
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -359,7 +368,7 @@ async function report(botOrApi, text) {
   }
 }
 
-async function restrictAcrossGroups(api, telegramId, username = "", durationMinutes = RESTRICTION_MINUTES, reason = "") {
+async function restrictAcrossGroups(api, telegramId, username = "", durationMinutes = RESTRICTION_MINUTES, reason = "", restrictionType = "rp") {
   const groups = db.prepare(`
     SELECT chat_id, title
     FROM rp_groups
@@ -371,8 +380,21 @@ async function restrictAcrossGroups(api, telegramId, username = "", durationMinu
     return;
   }
 
-  const untilUnix =
-    Math.floor(Date.now() / 1000) + durationMinutes * 60;
+  const currentUnix = Math.floor(Date.now() / 1000);
+  const activeRestrictionRows = db.prepare(`
+    SELECT restricted_until FROM observer_restrictions
+    WHERE telegram_id = ? AND restored_at IS NULL
+  `).all(telegramId);
+
+  const latestActiveUntil = activeRestrictionRows.reduce(
+    (latest, row) => Math.max(latest, timestampToUnix(row.restricted_until)),
+    0
+  );
+
+  const untilUnix = Math.max(
+    currentUnix + durationMinutes * 60,
+    latestActiveUntil
+  );
   const restrictedUntil = String(untilUnix);
   const successful = [];
   const failed = [];
@@ -438,8 +460,8 @@ async function restrictAcrossGroups(api, telegramId, username = "", durationMinu
   db.prepare(`
     INSERT INTO observer_restrictions
       (telegram_id, username, restricted_until, restored_at,
-       created_at, affected_groups, reason, trigger_warnings)
-    VALUES (?, ?, ?, NULL, ?, ?, ?, ?)
+       created_at, affected_groups, reason, trigger_warnings, restriction_type)
+    VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)
   `).run(
     telegramId,
     username || null,
@@ -447,7 +469,8 @@ async function restrictAcrossGroups(api, telegramId, username = "", durationMinu
     now(),
     JSON.stringify(successful),
     reason || `رسیدن به سقف ${WARNING_LIMIT} اخطار فعال نقش‌آفرینی`,
-    JSON.stringify(triggerWarnings)
+    JSON.stringify(triggerWarnings),
+    restrictionType
   );
 
   await report(
@@ -580,7 +603,7 @@ function getActiveWarnings(telegramId) {
   return db.prepare(`
     SELECT COUNT(*) AS total
     FROM observer_warnings
-    WHERE telegram_id = ? AND active = 1
+    WHERE telegram_id = ? AND active = 1 AND warning_type = 'rp'
   `).get(telegramId).total;
 }
 
@@ -590,8 +613,8 @@ async function warn(ctx, reason) {
 
   const result = db.prepare(`
     INSERT INTO observer_warnings
-      (telegram_id, chat_id, message_id, reason, created_at)
-    VALUES (?, ?, ?, ?, ?)
+      (telegram_id, chat_id, message_id, reason, created_at, warning_type)
+    VALUES (?, ?, ?, ?, ?, 'rp')
   `).run(user.id, chat.id, ctx.msg.message_id, reason, now());
 
   const total = getActiveWarnings(user.id);
@@ -620,6 +643,7 @@ async function warn(ctx, reason) {
     const activeRestrictionRows = db.prepare(`
       SELECT restricted_until FROM observer_restrictions
       WHERE telegram_id = ? AND restored_at IS NULL
+        AND restriction_type = 'rp'
     `).all(user.id);
     const existingRestriction = activeRestrictionRows.some(row =>
       timestampToUnix(row.restricted_until) > now()
@@ -1333,8 +1357,8 @@ export function registerObserver(bot) {
 
         const activeNeedWarnings = db.prepare(`
           SELECT COUNT(*) AS total FROM observer_need_warnings
-          WHERE telegram_id = ? AND active = 1
-        `).get(telegramId).total;
+          WHERE telegram_id = ? AND active = 1 AND need_type = ?
+        `).get(telegramId, needType).total;
         await report(bot.api,
           `⚠️ اخطار نیاز دوره‌ای ثبت شد | کاربر: ${telegramId} | گروه: ${chatId} | اخطار فعال نیازها: ${activeNeedWarnings}/${WARNING_LIMIT}`
         );
@@ -1343,7 +1367,8 @@ export function registerObserver(bot) {
           const restrictionRows = db.prepare(`
             SELECT restricted_until FROM observer_restrictions
             WHERE telegram_id = ? AND restored_at IS NULL
-          `).all(telegramId);
+              AND restriction_type = ?
+          `).all(telegramId, needType);
           const latestUntil = restrictionRows.reduce(
             (latest, row) => Math.max(latest, timestampToUnix(row.restricted_until)), 0
           );
@@ -1359,7 +1384,8 @@ export function registerObserver(bot) {
               bot.api, telegramId,
               person.user_username || person.map_username || "",
               120,
-              "عدم رسیدگی به نیازهای دوره‌ای شخصیت"
+              `عدم رسیدگی به نیاز دوره‌ای: ${needType}`,
+              needType
             );
           }
         }
@@ -1701,7 +1727,7 @@ export function registerObserver(bot) {
     const result = db.prepare(`
       UPDATE observer_warnings
       SET active = 0, cleared_at = ?
-      WHERE telegram_id = ? AND active = 1
+      WHERE telegram_id = ? AND active = 1 AND warning_type = 'rp'
     `).run(now(), targetId);
 
     audit(ctx.from.id, "warnings_cleared",
@@ -1735,7 +1761,7 @@ export function registerObserver(bot) {
     const rows = db.prepare(`
       SELECT id, chat_id, reason, created_at
       FROM observer_warnings
-      WHERE telegram_id = ? AND active = 1
+      WHERE telegram_id = ? AND active = 1 AND warning_type = 'rp'
       ORDER BY id DESC
       LIMIT 20
     `).all(targetId);
