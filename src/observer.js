@@ -1828,45 +1828,115 @@ export function registerObserver(bot) {
     );
   });
 
-  // بررسی تغییر یوزرنیم اعضا
+  // MONTADORIA_PROFILE_CHANGE_WARNING_V1
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS observer_profile_snapshots (
+      telegram_id INTEGER PRIMARY KEY,
+      first_name TEXT NOT NULL DEFAULT '',
+      last_name TEXT NOT NULL DEFAULT '',
+      username TEXT NOT NULL DEFAULT '',
+      updated_at INTEGER NOT NULL
+    );
+  `);
+
+  // بررسی تغییر نام و یوزرنیم اعضا
   bot.on("message", async ctx => {
     if (!isGroup(ctx.chat) || !ctx.from || ctx.from.is_bot) return;
     if (!isRegistered(ctx.chat.id)) return;
 
     const user = ctx.from;
-    const existing = db.prepare(`
-      SELECT username FROM users WHERE telegram_id = ?
+    const firstName = String(user.first_name || "");
+    const lastName = String(user.last_name || "");
+    const username = String(user.username || "");
+
+    const previous = db.prepare(`
+      SELECT first_name, last_name, username
+      FROM observer_profile_snapshots
+      WHERE telegram_id = ?
     `).get(user.id);
 
-    const newUsername = user.username || null;
-
-    if (existing && (existing.username || null) !== newUsername) {
+    // اولین مشاهده: ثبت اطلاعات اولیه بدون اخطار
+    if (!previous) {
       db.prepare(`
-        INSERT INTO observer_username_history
-          (telegram_id, old_username, new_username, changed_at)
-        VALUES (?, ?, ?, ?)
-      `).run(
-        user.id,
-        existing.username || null,
-        newUsername,
-        now()
-      );
+        INSERT INTO observer_profile_snapshots
+          (telegram_id, first_name, last_name, username, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(user.id, firstName, lastName, username, now());
+    } else {
+      const nameChanged =
+        previous.first_name !== firstName ||
+        previous.last_name !== lastName;
 
-      await report(ctx,
-        `🔄 <b>تغییر یوزرنیم</b>\n` +
-        `کاربر: <code>${user.id}</code>\n` +
-        `قبلی: ${escapeHtml(existing.username || "نداشت")}\n` +
-        `جدید: ${escapeHtml(newUsername || "ندارد")}\n` +
-        `گروه: ${escapeHtml(ctx.chat.title || String(ctx.chat.id))}`
-      );
+      const usernameChanged =
+        previous.username !== username;
 
-      db.prepare(`
-        UPDATE users
-        SET username = ?, updated_at = ?
-        WHERE telegram_id = ?
-      `).run(newUsername, now(), user.id);
+      if (nameChanged || usernameChanged) {
+        db.prepare(`
+          UPDATE observer_profile_snapshots
+          SET first_name = ?, last_name = ?, username = ?, updated_at = ?
+          WHERE telegram_id = ?
+        `).run(firstName, lastName, username, now(), user.id);
+
+        if (usernameChanged) {
+          db.prepare(`
+            INSERT INTO observer_username_history
+              (telegram_id, old_username, new_username, changed_at)
+            VALUES (?, ?, ?, ?)
+          `).run(
+            user.id,
+            previous.username || null,
+            username || null,
+            now()
+          );
+        }
+
+        const changes = [];
+        if (nameChanged) {
+          changes.push(
+            `نام قبلی: ${escapeHtml(
+              [previous.first_name, previous.last_name]
+                .filter(Boolean).join(" ") || "نداشت"
+            )}\n` +
+            `نام جدید: ${escapeHtml(
+              [firstName, lastName].filter(Boolean).join(" ") || "ندارد"
+            )}`
+          );
+        }
+
+        if (usernameChanged) {
+          changes.push(
+            `یوزرنیم قبلی: ${escapeHtml(
+              previous.username ? "@" + previous.username : "نداشت"
+            )}\n` +
+            `یوزرنیم جدید: ${escapeHtml(
+              username ? "@" + username : "ندارد"
+            )}`
+          );
+        }
+
+        await ctx.reply(
+          `⚠️ اخطار ناظر مونتادوریا\n` +
+          `تغییر مشخصات تلگرام شما شناسایی شد.\n` +
+          `لطفاً از تغییر نام یا یوزرنیم برای دور زدن قوانین خودداری کنید.`
+        );
+
+        await report(ctx,
+          `⚠️ <b>تغییر مشخصات تلگرام کاربر</b>\n` +
+          `کاربر: <a href="tg://user?id=${user.id}">${escapeHtml(firstName)}</a>\n` +
+          `یوزرنیم فعلی: ${escapeHtml(username ? "@" + username : "ندارد")}\n` +
+          changes.join("\n") + "\n" +
+          `گروه: ${escapeHtml(ctx.chat.title || "بدون نام")}`
+        );
+
+        db.prepare(`
+          UPDATE users
+          SET username = ?, updated_at = ?
+          WHERE telegram_id = ?
+        `).run(username || null, now(), user.id);
+      }
     }
 
+    // درخواست پنل با پیام ساده role
     // درخواست پنل با پیام ساده role
     if ((ctx.msg.text || "").trim().toLowerCase() === "role") {
       const dbUser = db.prepare(`
