@@ -335,7 +335,7 @@ ${body}`
     );
   });
 
-  bot.action(/^training:approve:(\d+)$/, async ctx => {
+  bot.callbackQuery(/^training:approve:(\d+)$/, async ctx => {
     if (!isManager(ctx)) {
       return ctx.answerCbQuery(
         "دسترسی مدیر لازم است.",
@@ -400,7 +400,7 @@ ${body}`
     } catch {}
   });
 
-  bot.action(/^training:reject:(\d+)$/, async ctx => {
+  bot.callbackQuery(/^training:reject:(\d+)$/, async ctx => {
     if (!isManager(ctx)) {
       return ctx.answerCbQuery(
         "دسترسی مدیر لازم است.",
