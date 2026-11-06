@@ -262,7 +262,7 @@ export function registerTraining(bot) {
     let msg;
 
     try {
-      msg = await bot.telegram.sendMessage(
+      msg = await bot.api.sendMessage(
         channel,
         `⟡ درخواست تأیید تمرین
 👤 ${userName(ctx)} (@${ctx.from.username || "بدون‌یوزرنیم"})
@@ -404,7 +404,7 @@ ${body}`
     );
 
     try {
-      await bot.telegram.sendMessage(
+      await bot.api.sendMessage(
         review.telegram_id,
         `تمرین «${review.skill}» تأیید شد.
 +${review.points} امتیاز
@@ -491,7 +491,7 @@ ${body}`
 علت: ${ctx.message.text.slice(0, 500)}`
           );
 
-          await bot.telegram.sendMessage(
+          await bot.api.sendMessage(
             review.telegram_id,
             `تمرین «${review.skill}» رد شد.
 علت: ${ctx.message.text.slice(0, 500)}`
