@@ -182,7 +182,7 @@ export function registerTraining(bot) {
     );
   });
 
-  bot.hears(/^#پایان_تمرین\s*\|/i, async ctx => {
+  bot.hears(/^#پایان_تمرین/i, async ctx => {
     if (!ctx.from || !ctx.message?.text) return;
 
     const parsed = splitEnd(ctx.message.text);
@@ -259,9 +259,12 @@ export function registerTraining(bot) {
       );
     }
 
-    const msg = await ctx.telegram.sendMessage(
-      channel,
-      `⟡ درخواست تأیید تمرین
+    let msg;
+
+    try {
+      msg = await ctx.telegram.sendMessage(
+        channel,
+        `⟡ درخواست تأیید تمرین
 👤 ${userName(ctx)} (@${ctx.from.username || "بدون‌یوزرنیم"})
 🆔 ${id}
 🥋 مهارت: ${parsed.skill}
@@ -269,21 +272,31 @@ export function registerTraining(bot) {
 ⏱ مدت: ${minutes} دقیقه
 ⭐ امتیاز: ${points}
 ✨ XP: ${xp}`,
-      {
-        reply_markup: {
-          inline_keyboard: [[
-            {
-              text: "✅ تأیید",
-              callback_data: `training:approve:${review.lastInsertRowid}`
-            },
-            {
-              text: "❌ رد",
-              callback_data: `training:reject:${review.lastInsertRowid}`
-            }
-          ]]
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              {
+                text: "✅ تأیید",
+                callback_data: `training:approve:${review.lastInsertRowid}`
+              },
+              {
+                text: "❌ رد",
+                callback_data: `training:reject:${review.lastInsertRowid}`
+              }
+            ]]
+          }
         }
-      }
-    );
+      );
+    } catch (error) {
+      console.error("TRAINING_CHANNEL_SEND_ERROR:", error);
+
+      await ctx.reply(
+        "❌ ارسال گزارش به کانال ناموفق بود.\n" +
+        "خطا: " + String(error.description || error.message || error)
+      );
+
+      return;
+    }
 
     db.prepare(`
       UPDATE training_reviews
