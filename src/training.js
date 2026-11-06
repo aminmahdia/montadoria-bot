@@ -337,7 +337,7 @@ ${body}`
 
   bot.callbackQuery(/^training:approve:(\d+)$/, async ctx => {
     if (!isManager(ctx)) {
-      return ctx.answerCbQuery(
+      return ctx.answerCallbackQuery(
         "دسترسی مدیر لازم است.",
         { show_alert: true }
       );
@@ -351,7 +351,7 @@ ${body}`
     `).get(rid);
 
     if (!review) {
-      return ctx.answerCbQuery(
+      return ctx.answerCallbackQuery(
         "این درخواست قبلاً بررسی شده است.",
         { show_alert: true }
       );
@@ -386,7 +386,7 @@ ${body}`
 ✅ تأیید شد توسط ${userName(ctx)}.`
     );
 
-    await ctx.answerCbQuery(
+    await ctx.answerCallbackQuery(
       "تمرین تأیید و امتیاز ثبت شد."
     );
 
@@ -402,7 +402,7 @@ ${body}`
 
   bot.callbackQuery(/^training:reject:(\d+)$/, async ctx => {
     if (!isManager(ctx)) {
-      return ctx.answerCbQuery(
+      return ctx.answerCallbackQuery(
         "دسترسی مدیر لازم است.",
         { show_alert: true }
       );
@@ -416,7 +416,7 @@ ${body}`
     `).get(rid);
 
     if (!review) {
-      return ctx.answerCbQuery(
+      return ctx.answerCallbackQuery(
         "این درخواست قبلاً بررسی شده است.",
         { show_alert: true }
       );
@@ -427,7 +427,7 @@ ${body}`
       String(rid)
     );
 
-    await ctx.answerCbQuery();
+    await ctx.answerCallbackQuery();
 
     await ctx.reply(
       "دلیل رد این تمرین را در پیام بعدی ارسال کنید."
