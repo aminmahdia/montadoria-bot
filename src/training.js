@@ -895,6 +895,76 @@ function rejectReview(reviewId, reviewerId, reason) {
 
 export function registerTraining(bot) {
 
+  // DELETE PLAYER SKILLS COMMANDS
+
+  bot.hears(
+    /^حذف مهارت\s*\|\s*(\d{5,20})\s*\|\s*(.+)$/i,
+    async ctx => {
+      if (!ctx.from || !isManager(ctx)) return;
+
+      const targetId = String(ctx.match[1]).trim();
+      const skill = safeSkill(ctx.match[2]);
+
+      if (!skill) {
+        return ctx.reply("❌ نام مهارت معتبر نیست.");
+      }
+
+      const result = db.prepare(`
+        DELETE FROM training_skills
+        WHERE telegram_id=? AND skill=?
+      `).run(targetId, skill);
+
+      if (result.changes === 0) {
+        return ctx.reply(
+          "❌ این مهارت برای بازیکن ثبت نشده است."
+        );
+      }
+
+      try {
+        await updatePersistentSkillProfile(bot, targetId);
+      } catch (err) {
+        console.error("Skill profile update failed:", err);
+      }
+
+      return ctx.reply(
+        `✅ مهارت ${skill} از بازیکن ${targetId} حذف شد.\n` +
+        "XP و تاریخچه تمرین‌های تأییدشده تغییری نکردند."
+      );
+    }
+  );
+
+  bot.hears(
+    /^حذف همه مهارت‌ها\s*\|\s*(\d{5,20})$/i,
+    async ctx => {
+      if (!ctx.from || !isManager(ctx)) return;
+
+      const targetId = String(ctx.match[1]).trim();
+
+      const result = db.prepare(`
+        DELETE FROM training_skills
+        WHERE telegram_id=?
+      `).run(targetId);
+
+      if (result.changes === 0) {
+        return ctx.reply(
+          "❌ این بازیکن مهارتی برای حذف ندارد."
+        );
+      }
+
+      try {
+        await updatePersistentSkillProfile(bot, targetId);
+      } catch (err) {
+        console.error("Skill profile update failed:", err);
+      }
+
+      return ctx.reply(
+        `✅ تمام مهارت‌های بازیکن ${targetId} حذف شدند.\n` +
+        "XP و تاریخچه تمرین‌های تأییدشده تغییری نکردند."
+      );
+    }
+  );
+
+
   // START TRAINING
 
   bot.hears(/^#شروع_تمرین$/i, async ctx => {
