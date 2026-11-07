@@ -1069,12 +1069,24 @@ export function registerTraining(bot) {
         pendingText,
         {
           reply_markup: {
-            inline_keyboard: sourceUrl
-              ? [[{
-                  text: "🔎 مشاهده پیام اصلی تمرین",
-                  url: sourceUrl
-                }]]
-              : []
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ تأیید",
+                  callback_data: `training:approve:${reviewId}`
+                },
+                {
+                  text: "❌ رد",
+                  callback_data: `training:reject:${reviewId}`
+                }
+              ],
+              ...(sourceUrl
+                ? [[{
+                    text: "🔎 مشاهده پیام اصلی تمرین",
+                    url: sourceUrl
+                  }]]
+                : [])
+            ]
           }
         }
       );
