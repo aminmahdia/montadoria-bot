@@ -228,7 +228,7 @@ async function messageUrl(api, chatId, messageId) {
   return null;
 }
 
-function reviewLinksKeyboard(sourceUrl, skillUrl) {
+function reviewLinksKeyboard(sourceUrl) {
   const rows = [];
 
   if (sourceUrl) {
@@ -236,15 +236,6 @@ function reviewLinksKeyboard(sourceUrl, skillUrl) {
       {
         text: "🔎 مشاهده پیام اصلی تمرین",
         url: sourceUrl
-      }
-    ]);
-  }
-
-  if (skillUrl) {
-    rows.push([
-      {
-        text: "📌 مشاهده گزارش کانال مهارت",
-        url: skillUrl
       }
     ]);
   }
@@ -317,13 +308,7 @@ async function editFinalReports(bot, review, text, fallbackMessage) {
     review.source_message_id
   );
 
-  const skillUrl = await messageUrl(
-    bot.api,
-    review.channel_id || getSetting("skill_channel_id"),
-    review.channel_message_id
-  );
-
-  const reply_markup = reviewLinksKeyboard(sourceUrl, skillUrl);
+  const reply_markup = reviewLinksKeyboard(sourceUrl);
 
   const finalText = sourceUrl ||
     !review.source_chat_id ||
@@ -337,6 +322,7 @@ async function editFinalReports(bot, review, text, fallbackMessage) {
   const reviewMessageId =
     review.review_message_id || fallbackMessage?.message_id;
 
+  // گزارش نهایی فقط در همان پیام گروه ناظران ثبت می‌شود.
   if (reviewChatId && reviewMessageId) {
     try {
       await bot.api.editMessageText(
@@ -353,19 +339,19 @@ async function editFinalReports(bot, review, text, fallbackMessage) {
     }
   }
 
+  // حذف پیام موقت قدیمی از کانال مهارت.
   const channelId =
     review.channel_id || getSetting("skill_channel_id");
 
   if (channelId && review.channel_message_id) {
     try {
-      await bot.api.editMessageText(
+      await bot.api.deleteMessage(
         channelId,
-        review.channel_message_id,
-        finalText
+        review.channel_message_id
       );
     } catch (error) {
       console.error(
-        "TRAINING_SKILL_REPORT_EDIT_ERROR:",
+        "TRAINING_SKILL_REQUEST_DELETE_ERROR:",
         error?.description || error?.message || error
       );
     }
@@ -547,7 +533,7 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
 
     <text x="228" y="565" text-anchor="middle" font-size="27" fill="#f4e3bb">${escapeSvg(displayName.slice(0, 36))}</text>
 
-    <text x="228" y="600" text-anchor="middle" font-size="17" fill="#b7a5c2">PLAYER ID · ${escapeSvg(user.telegram_id)}</text>
+    <text x="228" y="600" text-anchor="middle" font-size="17" fill="#b7a5c2">TELEGRAM ID · ${escapeSvg(user.telegram_id)}</text>
 
     <text x="520" y="190" font-size="24" fill="#d8b36a" letter-spacing="3">WEAPON MASTERY</text>
 
@@ -696,7 +682,7 @@ async function updatePersistentSkillProfile(bot, telegramId) {
   const caption = [
     "⟡ پرونده دائمی مهارت مونتادوریا ⟡",
     `👤 ${decoratedUserName(telegramId, user.display_name || "بازیکن")}`,
-    `🆔 ${telegramId}`,
+    `🆔 شناسه تلگرام: ${telegramId}`,
     `✨ XP: ${Number(user.xp || 0)} | 🎖 Level: ${Number(user.level || 1)}`,
     ...captionRows,
     "",
@@ -1063,45 +1049,13 @@ export function registerTraining(bot) {
       player?.display_name || userNameById(id)
     );
 
-    let skillMessage = null;
-
     try {
-      // گزارش اولیه در کانال مهارت، بدون دکمه تصمیم‌گیری.
-      skillMessage = await bot.api.sendMessage(
-        skillChannel,
-        [
-          "⟡ درخواست ثبت تمرین ⟡",
-          `👤 ${playerName}`,
-          `🆔 ${id}`,
-          `🥋 مهارت: ${parsed.skill}`,
-          `👥 نوع: ${parsed.mode}`,
-          `⏱ مدت: ${minutes} دقیقه`,
-          `⭐ امتیاز در انتظار: ${points}`,
-          `✨ XP در انتظار: ${xp}`,
-          `شماره درخواست: ${reviewId}`
-        ].join("\n")
-      );
-
-      db.prepare(`
-        UPDATE training_reviews
-        SET channel_message_id=?
-        WHERE id=?
-      `).run(
-        skillMessage.message_id,
-        reviewId
-      );
-
-      // لینک پیام پایان تمرین در گروه اصلی.
+      // درخواست بررسی فقط به گروه ناظران می‌رود.
+      // کانال مهارت مخصوص کارت تصویری دائمی بازیکن است.
       const sourceUrl = await messageUrl(
         bot.api,
         chatId,
         sourceMessageId
-      );
-
-      const skillUrl = await messageUrl(
-        bot.api,
-        skillChannel,
-        skillMessage.message_id
       );
 
       const pendingText = formatPendingText(
@@ -1110,38 +1064,17 @@ export function registerTraining(bot) {
         sourceUrl
       );
 
-      // دکمه‌های تصمیم فقط در گروه اطلاعات قرار می‌گیرند.
-      const keyboard = [
-        [
-          {
-            text: "✅ تأیید",
-            callback_data: `training:approve:${reviewId}`
-          },
-          {
-            text: "❌ رد",
-            callback_data: `training:reject:${reviewId}`
-          }
-        ],
-        ...(sourceUrl
-          ? [[{
-              text: "🔎 مشاهده پیام اصلی تمرین",
-              url: sourceUrl
-            }]]
-          : []),
-        ...(skillUrl
-          ? [[{
-              text: "📌 مشاهده گزارش کانال مهارت",
-              url: skillUrl
-            }]]
-          : [])
-      ];
-
       const reviewMessage = await bot.api.sendMessage(
         reviewGroup,
         pendingText,
         {
           reply_markup: {
-            inline_keyboard: keyboard
+            inline_keyboard: sourceUrl
+              ? [[{
+                  text: "🔎 مشاهده پیام اصلی تمرین",
+                  url: sourceUrl
+                }]]
+              : []
           }
         }
       );
@@ -1173,15 +1106,6 @@ export function registerTraining(bot) {
         error?.description || error?.message || error
       );
 
-      if (skillMessage?.message_id) {
-        try {
-          await bot.api.deleteMessage(
-            skillChannel,
-            skillMessage.message_id
-          );
-        } catch {}
-      }
-
       db.prepare(`
         UPDATE training_reviews
         SET status='delivery_failed'
@@ -1197,7 +1121,7 @@ export function registerTraining(bot) {
 
       return ctx.reply(
         "❌ ارسال تمرین برای بررسی کامل نشد؛ جلسه تمرین باز نگه داشته شد.\n" +
-        "دسترسی ربات به کانال مهارت و گروه اطلاعات و شناسه‌های تنظیم‌شده را بررسی کنید.\n" +
+        "دسترسی ربات به گروه اطلاعات و شناسه تنظیم‌شده را بررسی کنید.\n" +
         `خطا: ${String(error?.description || error?.message || error).slice(0, 250)}`
       );
     }
