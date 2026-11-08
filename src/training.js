@@ -82,6 +82,24 @@ ensureColumn("training_reviews", "review_message_id", "INTEGER");
 ensureColumn("training_reviews", "source_chat_id", "TEXT");
 ensureColumn("training_reviews", "source_message_id", "INTEGER");
 
+ensureColumn("training_sessions", "exercise_id", "INTEGER");
+ensureColumn("training_sessions", "exercise_name", "TEXT");
+ensureColumn("training_sessions", "skill", "TEXT");
+ensureColumn("training_sessions", "points_per_minute", "INTEGER");
+ensureColumn("training_sessions", "xp_per_minute", "INTEGER");
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS training_exercises (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  skill TEXT NOT NULL,
+  points_per_minute INTEGER NOT NULL,
+  xp_per_minute INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT,
+  created_at INTEGER NOT NULL
+);
+`);
+
 const getSetting = key =>
   db.prepare("SELECT value FROM training_settings WHERE key=?").get(key)?.value;
 
@@ -172,16 +190,15 @@ function splitEnd(text) {
     .split("|")
     .map(x => x.trim());
 
-  if (parts.length < 3) return null;
+  if (parts.length !== 2) return null;
 
-  const skill = safeSkill(parts[1]);
-  const mode = parts[2].toLowerCase();
+  const mode = parts[1].toLowerCase();
 
-  if (!skill || !["گروهی", "انفرادی"].includes(mode)) {
+  if (!["گروهی", "انفرادی"].includes(mode)) {
     return null;
   }
 
-  return { skill, mode };
+  return { mode };
 }
 
 function escapeSvg(value) {
@@ -965,6 +982,242 @@ export function registerTraining(bot) {
   );
 
 
+
+  // PREDEFINED EXERCISES
+
+  bot.hears(/^افزودن تمرین\s*\|/i, async ctx => {
+    if (!ctx.from || !isManager(ctx)) return;
+
+    const a = String(ctx.message.text).split("|").map(x => x.trim());
+
+    if (a.length !== 5) {
+      return ctx.reply(
+        "قالب:\nافزودن تمرین | نام تمرین | مهارت مقصد | امتیاز هر دقیقه | XP هر دقیقه"
+      );
+    }
+
+    const name = safeSkill(a[1]);
+    const skill = safeSkill(a[2]);
+    const points = Number(a[3]);
+    const xp = Number(a[4]);
+
+    if (!name || !skill ||
+        !Number.isSafeInteger(points) || points < 1 || points > 1000 ||
+        !Number.isSafeInteger(xp) || xp < 0 || xp > 1000) {
+      return ctx.reply("❌ اطلاعات تمرین معتبر نیست.");
+    }
+
+    try {
+      const result = db.prepare(`
+        INSERT INTO training_exercises(
+          name,skill,points_per_minute,xp_per_minute,created_by,created_at
+        ) VALUES(?,?,?,?,?,?)
+      `).run(
+        name, skill, points, xp,
+        String(ctx.from.id),
+        Math.floor(Date.now() / 1000)
+      );
+
+      return ctx.reply(
+        `✅ تمرین ثبت شد.\nشناسه: ${result.lastInsertRowid}\n` +
+        `نام: ${name}\nمهارت: ${skill}\n` +
+        `امتیاز هر دقیقه: ${points}\nXP هر دقیقه: ${xp}`
+      );
+    } catch (e) {
+      if (/UNIQUE|constraint/i.test(String(e.message))) {
+        return ctx.reply("❌ این نام تمرین قبلاً ثبت شده است.");
+      }
+      console.error(e);
+      return ctx.reply("❌ ثبت تمرین ناموفق بود.");
+    }
+  });
+
+  bot.hears(/^ویرایش تمرین\s*\|/i, async ctx => {
+    if (!ctx.from || !isManager(ctx)) return;
+
+    const a = String(ctx.message.text).split("|").map(x => x.trim());
+
+    if (a.length !== 6) {
+      return ctx.reply(
+        "قالب:\nویرایش تمرین | شناسه | نام | مهارت مقصد | امتیاز هر دقیقه | XP هر دقیقه"
+      );
+    }
+
+    const id = Number(a[1]);
+    const name = safeSkill(a[2]);
+    const skill = safeSkill(a[3]);
+    const points = Number(a[4]);
+    const xp = Number(a[5]);
+
+    if (!Number.isSafeInteger(id) || id < 1 || !name || !skill ||
+        !Number.isSafeInteger(points) || points < 1 || points > 1000 ||
+        !Number.isSafeInteger(xp) || xp < 0 || xp > 1000) {
+      return ctx.reply("❌ اطلاعات ویرایش معتبر نیست.");
+    }
+
+    try {
+      const r = db.prepare(`
+        UPDATE training_exercises
+        SET name=?,skill=?,points_per_minute=?,xp_per_minute=?
+        WHERE id=?
+      `).run(name, skill, points, xp, id);
+
+      return ctx.reply(
+        r.changes ? `✅ تمرین ${id} ویرایش شد.` :
+        "❌ شناسه تمرین پیدا نشد."
+      );
+    } catch (e) {
+      if (/UNIQUE|constraint/i.test(String(e.message))) {
+        return ctx.reply("❌ نام تمرین تکراری است.");
+      }
+      console.error(e);
+      return ctx.reply("❌ ویرایش ناموفق بود.");
+    }
+  });
+
+  bot.hears(/^حذف تمرین\s*\|\s*(\d+)$/i, async ctx => {
+    if (!ctx.from || !isManager(ctx)) return;
+
+    const r = db.prepare(
+      "DELETE FROM training_exercises WHERE id=?"
+    ).run(Number(ctx.match[1]));
+
+    return ctx.reply(
+      r.changes ? "✅ تمرین حذف شد." : "❌ تمرین پیدا نشد."
+    );
+  });
+
+  bot.hears(/^فهرست تمرین‌ها$/i, async ctx => {
+    const rows = db.prepare(`
+      SELECT id,name,skill,points_per_minute,xp_per_minute
+      FROM training_exercises ORDER BY id
+    `).all();
+
+    if (!rows.length) return ctx.reply("هنوز تمرینی ثبت نشده است.");
+
+    return ctx.reply(
+      "⟡ فهرست تمرین‌ها ⟡\n\n" +
+      rows.map(x =>
+        `${x.id}. ${x.name}\nمهارت: ${x.skill}\n` +
+        `${x.points_per_minute} امتیاز و ${x.xp_per_minute} XP در دقیقه`
+      ).join("\n\n")
+    );
+  });
+
+  bot.hears(/^#تمرین‌ها$/i, async ctx => {
+    if (!ctx.from || !ctx.chat) return;
+
+    if (!inActiveRP(ctx)) {
+      return ctx.reply("ابتدا باید #ورود کرده باشید.");
+    }
+
+    if (isSleeping(ctx.from.id)) {
+      return ctx.reply("در زمان خواب امکان تمرین وجود ندارد.");
+    }
+
+    const active = db.prepare(`
+      SELECT id,exercise_id,exercise_name
+      FROM training_sessions
+      WHERE telegram_id=? AND status='active'
+      LIMIT 1
+    `).get(String(ctx.from.id));
+
+    if (active) {
+      return ctx.reply(
+        `شما تمرین فعال «${active.exercise_name || "قدیمی"}» دارید.`
+      );
+    }
+
+    const rows = db.prepare(`
+      SELECT id,name,skill
+      FROM training_exercises ORDER BY id
+    `).all();
+
+    if (!rows.length) {
+      return ctx.reply("مدیر هنوز تمرینی تعریف نکرده است.");
+    }
+
+    return ctx.reply(
+      "یک تمرین انتخاب کن:",
+      {
+        reply_markup: {
+          inline_keyboard: rows.map(x => [{
+            text: `${x.name} | ${x.skill}`.slice(0, 64),
+            callback_data: `training:start:${x.id}`
+          }])
+        }
+      }
+    );
+  });
+
+  bot.callbackQuery(/^training:start:(\d+)$/, async ctx => {
+    if (!ctx.from || !ctx.chat) return;
+
+    if (!inActiveRP(ctx)) {
+      return ctx.answerCallbackQuery({
+        text: "ابتدا باید #ورود کرده باشید.",
+        show_alert: true
+      });
+    }
+
+    if (isSleeping(ctx.from.id)) {
+      return ctx.answerCallbackQuery({
+        text: "در زمان خواب امکان تمرین وجود ندارد.",
+        show_alert: true
+      });
+    }
+
+    const id = String(ctx.from.id);
+    const chat = String(ctx.chat.id);
+
+    const active = db.prepare(`
+      SELECT id FROM training_sessions
+      WHERE telegram_id=? AND status='active'
+      LIMIT 1
+    `).get(id);
+
+    if (active) {
+      return ctx.answerCallbackQuery({
+        text: "شما تمرین فعال دارید.",
+        show_alert: true
+      });
+    }
+
+    const exercise = db.prepare(`
+      SELECT * FROM training_exercises WHERE id=?
+    `).get(Number(ctx.match[1]));
+
+    if (!exercise) {
+      return ctx.answerCallbackQuery({
+        text: "تمرین پیدا نشد.",
+        show_alert: true
+      });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+
+    db.prepare(`
+      INSERT INTO training_sessions(
+        telegram_id,chat_id,started_at,last_activity_at,status,
+        exercise_id,exercise_name,skill,points_per_minute,xp_per_minute
+      )
+      VALUES(?,?,?,?,'active',?,?,?,?,?)
+    `).run(
+      id, chat, now, now,
+      exercise.id, exercise.name, exercise.skill,
+      exercise.points_per_minute, exercise.xp_per_minute
+    );
+
+    await ctx.answerCallbackQuery({ text: "تمرین آغاز شد." });
+
+    return ctx.editMessageText(
+      `✅ تمرین آغاز شد.\n\n` +
+      `🏋️ ${exercise.name}\n🥋 مهارت مقصد: ${exercise.skill}\n\n` +
+      "برای پایان:\n#پایان_تمرین | گروهی\nیا\n#پایان_تمرین | انفرادی",
+      { reply_markup: { inline_keyboard: [] } }
+    );
+  });
+
   // START TRAINING
 
   bot.hears(/^#شروع_تمرین$/i, async ctx => {
@@ -1081,8 +1334,18 @@ export function registerTraining(bot) {
       )
     );
 
-    const points = minutes * POINTS_PER_MINUTE;
-    const xp = minutes * XP_PER_MINUTE;
+    if (!session.exercise_id || !session.skill) {
+      db.prepare(`
+        UPDATE training_sessions SET status='cancelled' WHERE id=?
+      `).run(session.id);
+
+      return ctx.reply(
+        "این جلسه با روش قبلی شروع شده؛ لطفاً #تمرین‌ها را انتخاب کن."
+      );
+    }
+
+    const points = minutes * Number(session.points_per_minute);
+    const xp = minutes * Number(session.xp_per_minute);
     const sourceMessageId = Number(ctx.message.message_id);
 
     const inserted = db.prepare(`
@@ -1095,7 +1358,7 @@ export function registerTraining(bot) {
     `).run(
       session.id,
       id,
-      parsed.skill,
+      session.skill,
       parsed.mode,
       minutes,
       points,
