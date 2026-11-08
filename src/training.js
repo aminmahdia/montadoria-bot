@@ -1002,8 +1002,8 @@ export function registerTraining(bot) {
     const xp = Number(a[4]);
 
     if (!name || !skill ||
-        !Number.isSafeInteger(points) || points < 1 || points > 1000 ||
-        !Number.isSafeInteger(xp) || xp < 0 || xp > 1000) {
+        !Number.isFinite(points) || points <= 0 || points > 1000 ||
+        !Number.isFinite(xp) || xp < 0 || xp > 1000) {
       return ctx.reply("❌ اطلاعات تمرین معتبر نیست.");
     }
 
@@ -1050,8 +1050,8 @@ export function registerTraining(bot) {
     const xp = Number(a[5]);
 
     if (!Number.isSafeInteger(id) || id < 1 || !name || !skill ||
-        !Number.isSafeInteger(points) || points < 1 || points > 1000 ||
-        !Number.isSafeInteger(xp) || xp < 0 || xp > 1000) {
+        !Number.isFinite(points) || points <= 0 || points > 1000 ||
+        !Number.isFinite(xp) || xp < 0 || xp > 1000) {
       return ctx.reply("❌ اطلاعات ویرایش معتبر نیست.");
     }
 
@@ -1344,8 +1344,13 @@ export function registerTraining(bot) {
       );
     }
 
-    const points = minutes * Number(session.points_per_minute);
-    const xp = minutes * Number(session.xp_per_minute);
+    const modeMultiplier = parsed.mode === "گروهی" ? 1.5 : 1;
+
+    // امتیاز مهارت: انفرادی ۱۰ و گروهی ۱۵ در هر ساعت
+    const points = (minutes / 60) * 10 * modeMultiplier;
+
+    // XP: هر ۵ دقیقه تمرین، ۲ XP
+    const xp = Math.floor(minutes / 5) * 2;
     const sourceMessageId = Number(ctx.message.message_id);
 
     const inserted = db.prepare(`
