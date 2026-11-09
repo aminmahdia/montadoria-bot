@@ -1,6 +1,14 @@
 import db from "./database.js";
 import { InputFile } from "grammy";
 import sharp from "sharp";
+import ffmpegPath from "ffmpeg-static";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdtemp, writeFile, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const runFFmpeg = promisify(execFile);
 
 sharp.concurrency(1);
 
@@ -59,6 +67,19 @@ CREATE TABLE IF NOT EXISTS training_profile_posts (
   chat_id TEXT NOT NULL,
   message_id INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS training_profile_photos (
+  telegram_id TEXT PRIMARY KEY,
+  photo_file_id TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS training_profile_photo_requests (
+  telegram_id TEXT PRIMARY KEY,
+  chat_id TEXT NOT NULL,
+  prompt_message_id INTEGER NOT NULL DEFAULT 0,
+  requested_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS training_reject_wait (
@@ -457,6 +478,32 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
 
   const rows = skills.slice(0, PROFILE_SKILLS_LIMIT);
 
+  const glowFilters = rows.map((skill, index) => {
+    const percent = Math.min(
+      100,
+      Math.max(
+        0,
+        Math.round(Number(skill.points || 0) / SKILL_MASTERY_POINTS * 100)
+      )
+    );
+
+    const glowColor =
+      percent >= 100 ? "#ff75da" :
+      percent >= 75 ? "#bd68ff" :
+      percent >= 50 ? "#46c9ff" :
+      percent >= 25 ? "#ffd34e" : "#ff713b";
+
+    const blur = (2 + percent * 0.09).toFixed(1);
+    const opacity = (0.18 + percent * 0.0075).toFixed(2);
+
+    return `<filter id="weaponGlow${index}" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="${blur}" result="blur"/>
+      <feFlood flood-color="${glowColor}" flood-opacity="${opacity}" result="flood"/>
+      <feComposite in="flood" in2="blur" operator="in" result="glow"/>
+      <feMerge><feMergeNode in="glow"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>`;
+  }).join("");
+
   const skillMarkup = rows.length
     ? rows.map((skill, index) => {
         const y = 245 + index * 104;
@@ -472,20 +519,17 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
           )
         );
 
-        const barWidth = Math.round(310 * percent / 100);
         const color = fireColor(percent);
 
         return `
           <g>
-            <text x="520" y="${y}" font-size="31" fill="#f4e9d2">${escapeSvg(weaponIcon(skill.skill))}</text>
+            <circle cx="532" cy="${y - 10}" r="${Math.round(23 + percent * 0.08)}" fill="${color}" opacity="${(0.035 + percent / 100 * 0.15).toFixed(3)}"/>
+            <text x="520" y="${y}" font-size="${Math.round(40 + percent * 0.12)}" fill="#fff1cf" filter="url(#weaponGlow${index})" opacity="${(0.62 + percent / 100 * 0.38).toFixed(2)}">${escapeSvg(weaponIcon(skill.skill))}</text>
 
             <text x="575" y="${y}" font-size="25" fill="#f4e9d2" direction="rtl" unicode-bidi="plaintext">${escapeSvg(String(skill.skill).slice(0, 24))}</text>
 
             <text x="1045" y="${y}" font-size="22" fill="#d9c8a7" text-anchor="end">${percent}%</text>
 
-            <rect x="575" y="${y + 18}" width="470" height="16" rx="8" fill="#332b3e"/>
-
-            <rect x="575" y="${y + 18}" width="${barWidth}" height="16" rx="8" fill="${color}"/>
 
             <text x="575" y="${y + 64}" font-size="16" fill="#a99cb3">${Number(skill.points || 0)} امتیاز · ${Number(skill.sessions || 0)} تمرین</text>
 
@@ -531,6 +575,8 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
       <pattern id="grain" width="48" height="48" patternUnits="userSpaceOnUse">
         <path d="M0 24H48 M24 0V48" stroke="#ffffff" stroke-opacity=".025" stroke-width="1"/>
       </pattern>
+
+      ${glowFilters}
     </defs>
 
     <rect width="1200" height="720" rx="34" fill="url(#bg)"/>
@@ -566,218 +612,421 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
   </svg>`;
 }
 
-// USER PHOTO
+// TRAINING PROFILE VIDEO V1
 
-async function getRegisteredPhotoFileId(id) {
-  try {
-    const user = userRecord(id);
+const profileGenerationQueues = new Map();
 
-    if (!user?.username) return null;
+// DOWNLOAD THE PLAYER'S PRIVATE PROFILE PHOTO
 
-    const row = db.prepare(`
-      SELECT photo_file_id
-      FROM character_registrations
-      WHERE telegram_username=? COLLATE NOCASE
-      LIMIT 1
-    `).get(String(user.username).replace(/^@/, ""));
-
-    return row?.photo_file_id || null;
-  } catch {
-    return null;
-  }
-}
-
-async function getUserPhotoBuffer(bot, id) {
-  try {
-    let fileId = await getRegisteredPhotoFileId(id);
-
-    if (!fileId) {
-      const photos = await bot.api.getUserProfilePhotos(
-        Number(id),
-        { limit: 1 }
-      );
-
-      const sizes = photos?.photos?.[0] || [];
-
-      const largest = sizes.reduce((best, item) => {
-        if (!best) return item;
-
-        return Number(item.width || 0) * Number(item.height || 0) >
-          Number(best.width || 0) * Number(best.height || 0)
-          ? item
-          : best;
-      }, null);
-
-      fileId = largest?.file_id || null;
-    }
-
-    if (!fileId) return null;
-
-    const file = await bot.api.getFile(fileId);
-
-    if (!file?.file_path) return null;
-
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-
-    if (!token) return null;
-
-    const response = await fetch(
-      `https://api.telegram.org/file/bot${token}/${file.file_path}`
-    );
-
-    if (!response.ok) {
-      throw new Error(`Telegram photo download failed: ${response.status}`);
-    }
-
-    const data = Buffer.from(await response.arrayBuffer());
-
-    if (!data.length || data.length > 8 * 1024 * 1024) return null;
-
-    return await sharp(data)
-      .rotate()
-      .resize({ width: 480, height: 480, fit: "cover" })
-      .jpeg({ quality: 86 })
-      .toBuffer();
-
-  } catch (error) {
-    console.error(
-      "TRAINING_PROFILE_PHOTO_ERROR:",
-      error?.description || error?.message || error
-    );
-
-    return null;
-  }
-}
-
-// PERMANENT SKILL PROFILE
-
-async function updatePersistentSkillProfile(bot, telegramId) {
-  const chatId = getSetting("skill_channel_id");
-
-  if (!chatId) return;
-
-  const user = userRecord(telegramId) || {
-    telegram_id: String(telegramId),
-    display_name: userNameById(telegramId),
-    xp: 0,
-    level: 1
-  };
-
-  const skills = db.prepare(`
-    SELECT skill, points, sessions
-    FROM training_skills
-    WHERE telegram_id=?
-    ORDER BY points DESC, skill ASC
-  `).all(String(telegramId));
-
-  const photoBuffer = await getUserPhotoBuffer(bot, telegramId);
-
-  const svg = profileSvg(
-    user,
-    skills,
-    user.xp,
-    user.level,
-    photoBuffer
-  );
-
-  const imageBuffer = await sharp(Buffer.from(svg))
-    .png()
-    .toBuffer();
-
-  const captionRows = skills.slice(0, 8).map(item => {
-    const percent = Math.min(
-      100,
-      Math.max(
-        0,
-        Math.round(Number(item.points || 0) / SKILL_MASTERY_POINTS * 100)
-      )
-    );
-
-    return `${weaponIcon(item.skill)} ${item.skill}: ${percent}% (${item.points} امتیاز)`;
-  });
-
-  const caption = [
-    "⟡ پرونده دائمی مهارت مونتادوریا ⟡",
-    `👤 ${decoratedUserName(telegramId, user.display_name || "بازیکن")}`,
-    `🆔 شناسه تلگرام: ${telegramId}`,
-    `✨ XP: ${Number(user.xp || 0)} | 🎖 Level: ${Number(user.level || 1)}`,
-    ...captionRows,
-    "",
-    "🔥 در ۱۰۰ امتیاز هر مهارت، آتش آن به حالت رنگی کامل می‌رسد."
-  ].join("\n").slice(0, 1000);
-
-  const oldPost = db.prepare(`
-    SELECT chat_id, message_id
-    FROM training_profile_posts
+async function getTrainingProfilePhotoBuffer(bot, telegramId) {
+  const saved = db.prepare(`
+    SELECT photo_file_id
+    FROM training_profile_photos
     WHERE telegram_id=?
   `).get(String(telegramId));
 
-  if (oldPost && String(oldPost.chat_id) === String(chatId)) {
-    try {
-      await bot.api.editMessageMedia(
-        oldPost.chat_id,
-        oldPost.message_id,
-        {
-          type: "photo",
-          media: new InputFile(
-            imageBuffer,
-            "montadoria-skill-profile.png"
-          ),
-          caption
-        }
-      );
+  if (!saved?.photo_file_id) return null;
 
-      db.prepare(`
-        UPDATE training_profile_posts
-        SET updated_at=?
-        WHERE telegram_id=?
-      `).run(
-        Math.floor(Date.now() / 1000),
-        String(telegramId)
-      );
+  const file = await bot.api.getFile(saved.photo_file_id);
 
-      return;
-
-    } catch (error) {
-      const message = String(
-        error?.description || error?.message || error
-      );
-
-      if (/message is not modified/i.test(message)) return;
-
-      console.error("TRAINING_PROFILE_EDIT_ERROR:", message);
-    }
+  if (!file?.file_path) {
+    throw new Error("Telegram photo file path is unavailable.");
   }
 
-  const sent = await bot.api.sendPhoto(
-    chatId,
-    new InputFile(imageBuffer, "montadoria-skill-profile.png"),
-    { caption }
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!token) {
+    throw new Error("TELEGRAM_BOT_TOKEN is not configured.");
+  }
+
+  const response = await fetch(
+    `https://api.telegram.org/file/bot${token}/${file.file_path}`
   );
 
+  if (!response.ok) {
+    throw new Error(`Photo download failed: ${response.status}`);
+  }
+
+  const data = Buffer.from(await response.arrayBuffer());
+
+  if (!data.length || data.length > 8 * 1024 * 1024) {
+    throw new Error("Profile photo exceeds the 8 MB processing limit.");
+  }
+
+  return await sharp(data)
+    .rotate()
+    .resize({
+      width: 480,
+      height: 480,
+      fit: "cover"
+    })
+    .jpeg({ quality: 86 })
+    .toBuffer();
+}
+
+// ASK FOR A PRIVATE PLAYER-SELECTED PHOTO
+
+async function requestTrainingProfilePhoto(
+  bot,
+  telegramId,
+  fallbackChatId = null,
+  force = false
+) {
+  const id = String(telegramId);
+
+  const saved = db.prepare(`
+    SELECT photo_file_id
+    FROM training_profile_photos
+    WHERE telegram_id=?
+  `).get(id);
+
+  if (saved?.photo_file_id && !force) return false;
+
+  const pending = db.prepare(`
+    SELECT telegram_id
+    FROM training_profile_photo_requests
+    WHERE telegram_id=?
+  `).get(id);
+
+  if (pending && !force) return true;
+
+  if (force) {
+    db.prepare(`
+      DELETE FROM training_profile_photo_requests
+      WHERE telegram_id=?
+    `).run(id);
+  }
+
+  const privatePrompt =
+    "📸 برای ساخت کارت ویدیویی مهارت مونتادوریا، یک عکس دلخواه بفرست و به همین پیام پاسخ بده.\n\n" +
+    "عکس باید به‌صورت «Photo» ارسال شود، نه فایل.\n" +
+    "این تصویر در کانال مهارت و همراه کارت ویدیویی تو نمایش داده می‌شود.";
+
+  let privateSent = null;
+  let privateError = null;
+
+  try {
+    privateSent = await bot.api.sendMessage(
+      id,
+      privatePrompt,
+      {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: "ارسال عکس کارت مهارت"
+        }
+      }
+    );
+  } catch (error) {
+    privateError = error;
+  }
+
+  let promptMessageId = Number(privateSent?.message_id || 0);
+
+  if (!privateSent) {
+    const latestReview = db.prepare(`
+      SELECT source_chat_id
+      FROM training_reviews
+      WHERE telegram_id=?
+        AND source_chat_id IS NOT NULL
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(id);
+
+    const fallback = String(
+      fallbackChatId || latestReview?.source_chat_id || ""
+    );
+
+    if (!fallback || fallback === id) {
+      throw privateError || new Error(
+        "Unable to open a private photo request."
+      );
+    }
+
+    await bot.api.sendMessage(
+      fallback,
+      `📸 بازیکن با شناسه ${id}: برای ساخت کارت مهارت، ابتدا وارد گفت‌وگوی خصوصی ربات شو و /start را بزن؛ سپس عکس دلخواهت را در خصوصی ربات ارسال کن.\n` +
+      "برای حفظ حریم خصوصی، عکس را داخل این گروه نفرست."
+    );
+  }
+
   db.prepare(`
-    INSERT INTO training_profile_posts(
-      telegram_id, chat_id, message_id, updated_at
+    INSERT INTO training_profile_photo_requests(
+      telegram_id,chat_id,prompt_message_id,requested_at
     )
     VALUES(?,?,?,?)
     ON CONFLICT(telegram_id) DO UPDATE SET
       chat_id=excluded.chat_id,
-      message_id=excluded.message_id,
-      updated_at=excluded.updated_at
+      prompt_message_id=excluded.prompt_message_id,
+      requested_at=excluded.requested_at
   `).run(
-    String(telegramId),
-    String(chatId),
-    sent.message_id,
+    id,
+    id,
+    promptMessageId,
     Math.floor(Date.now() / 1000)
   );
 
-  if (oldPost) {
+  return true;
+}
+
+// RENDER A SHORT, STREAMABLE MP4 VIDEO
+
+async function buildSkillProfileVideo(svg) {
+  if (!ffmpegPath) {
+    throw new Error("FFmpeg binary was not installed on the host.");
+  }
+
+  const dir = await mkdtemp(
+    join(tmpdir(), "montadoria-skill-profile-")
+  );
+
+  const pngPath = join(dir, "profile.png");
+  const mp4Path = join(dir, "profile.mp4");
+
+  try {
+    const pngBuffer = await sharp(Buffer.from(svg))
+      .png()
+      .toBuffer();
+
+    await writeFile(pngPath, pngBuffer);
+
+    await runFFmpeg(
+      ffmpegPath,
+      [
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-loop", "1",
+        "-framerate", "12",
+        "-i", pngPath,
+        "-vf",
+        "zoompan=z='1+0.012*(1-cos(2*PI*on/36))/2':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1200x720:fps=12,eq=brightness='0.010*sin(2*PI*t/3)':eval=frame",
+        "-frames:v", "36",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-tune", "stillimage",
+        "-crf", "27",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-an",
+        "-threads", "1",
+        mp4Path
+      ],
+      {
+        timeout: 120000,
+        maxBuffer: 8 * 1024 * 1024
+      }
+    );
+
+    const info = await stat(mp4Path);
+
+    if (!info.size || info.size > 10 * 1024 * 1024) {
+      throw new Error("Generated profile video is empty or exceeds 10 MB.");
+    }
+
+    return await readFile(mp4Path);
+
+  } finally {
+    await rm(dir, {
+      recursive: true,
+      force: true
+    }).catch(() => {});
+  }
+}
+
+// UPDATE THE EXISTING PROFILE POST, WITHOUT DUPLICATING IT
+
+async function updatePersistentSkillProfile(bot, telegramId) {
+  const id = String(telegramId);
+  const previous = profileGenerationQueues.get(id) || Promise.resolve();
+
+  const task = previous.catch(() => {}).then(async () => {
+    const chatId = getSetting("skill_channel_id");
+
+    if (!chatId) return;
+
+    const user = userRecord(id) || {
+      telegram_id: id,
+      display_name: userNameById(id),
+      xp: 0,
+      level: 1
+    };
+
+    const skills = db.prepare(`
+      SELECT skill, points, sessions
+      FROM training_skills
+      WHERE telegram_id=?
+      ORDER BY points DESC, skill ASC
+    `).all(id);
+
+    const oldPost = db.prepare(`
+      SELECT chat_id, message_id
+      FROM training_profile_posts
+      WHERE telegram_id=?
+    `).get(id);
+
+    if (!skills.length && !oldPost) return;
+
+    const photoRow = db.prepare(`
+      SELECT photo_file_id
+      FROM training_profile_photos
+      WHERE telegram_id=?
+    `).get(id);
+
+    if (!photoRow?.photo_file_id) {
+      if (skills.length) {
+        await requestTrainingProfilePhoto(bot, id);
+      }
+      return;
+    }
+
+    let photoBuffer;
+
     try {
-      await bot.api.deleteMessage(
-        oldPost.chat_id,
-        oldPost.message_id
+      photoBuffer = await getTrainingProfilePhotoBuffer(bot, id);
+    } catch (error) {
+      console.error(
+        "TRAINING_PROFILE_PHOTO_DOWNLOAD_ERROR:",
+        error?.description || error?.message || error
       );
-    } catch {}
+
+      await requestTrainingProfilePhoto(bot, id, null, true);
+      return;
+    }
+
+    if (!photoBuffer) return;
+
+    const svg = profileSvg(
+      user,
+      skills,
+      user.xp,
+      user.level,
+      photoBuffer
+    );
+
+    const videoBuffer = await buildSkillProfileVideo(svg);
+
+    const captionRows = skills.slice(0, 8).map(item => {
+      const percent = Math.min(
+        100,
+        Math.max(
+          0,
+          Math.round(
+            Number(item.points || 0) /
+            SKILL_MASTERY_POINTS * 100
+          )
+        )
+      );
+
+      return `${weaponIcon(item.skill)} ${item.skill}: ${percent}% (${item.points} امتیاز)`;
+    });
+
+    const caption = [
+      "⟡ پرونده ویدیویی دائمی مهارت مونتادوریا ⟡",
+      `👤 ${decoratedUserName(id, user.display_name || "بازیکن")}`,
+      `🆔 شناسه تلگرام: ${id}`,
+      `✨ XP: ${Number(user.xp || 0)} | 🎖 Level: ${Number(user.level || 1)}`,
+      ...captionRows,
+      "",
+      "🔥 در ۱۰۰ امتیاز، نماد هر مهارت به درخشش رنگی کامل می‌رسد."
+    ].join("\n").slice(0, 1000);
+
+    if (oldPost && String(oldPost.chat_id) === String(chatId)) {
+      try {
+        await bot.api.editMessageMedia(
+          oldPost.chat_id,
+          oldPost.message_id,
+          {
+            type: "video",
+            media: new InputFile(
+              videoBuffer,
+              "montadoria-skill-profile.mp4"
+            ),
+            caption
+          }
+        );
+
+        db.prepare(`
+          UPDATE training_profile_posts
+          SET updated_at=?
+          WHERE telegram_id=?
+        `).run(
+          Math.floor(Date.now() / 1000),
+          id
+        );
+
+        return;
+
+      } catch (error) {
+        const message = String(
+          error?.description || error?.message || error
+        );
+
+        if (/message is not modified/i.test(message)) {
+          db.prepare(`
+            UPDATE training_profile_posts
+            SET updated_at=?
+            WHERE telegram_id=?
+          `).run(
+            Math.floor(Date.now() / 1000),
+            id
+          );
+
+          return;
+        }
+
+        console.error("TRAINING_PROFILE_VIDEO_EDIT_ERROR:", message);
+      }
+    }
+
+    const sent = await bot.api.sendVideo(
+      chatId,
+      new InputFile(
+        videoBuffer,
+        "montadoria-skill-profile.mp4"
+      ),
+      {
+        caption,
+        duration: 3,
+        width: 1200,
+        height: 720,
+        supports_streaming: true
+      }
+    );
+
+    db.prepare(`
+      INSERT INTO training_profile_posts(
+        telegram_id,chat_id,message_id,updated_at
+      )
+      VALUES(?,?,?,?)
+      ON CONFLICT(telegram_id) DO UPDATE SET
+        chat_id=excluded.chat_id,
+        message_id=excluded.message_id,
+        updated_at=excluded.updated_at
+    `).run(
+      id,
+      String(chatId),
+      sent.message_id,
+      Math.floor(Date.now() / 1000)
+    );
+
+    if (oldPost) {
+      try {
+        await bot.api.deleteMessage(
+          oldPost.chat_id,
+          oldPost.message_id
+        );
+      } catch {}
+    }
+  });
+
+  profileGenerationQueues.set(id, task);
+
+  try {
+    await task;
+  } finally {
+    if (profileGenerationQueues.get(id) === task) {
+      profileGenerationQueues.delete(id);
+    }
   }
 }
 
@@ -911,6 +1160,105 @@ function rejectReview(reviewId, reviewerId, reason) {
 // MAIN SYSTEM
 
 export function registerTraining(bot) {
+
+  // ONLY ACCEPT THE REQUESTED PHOTO IN THE PLAYER'S PRIVATE CHAT.
+  bot.on("message:photo", async (ctx, next) => {
+    if (!ctx.from || !ctx.chat || ctx.chat.type !== "private") {
+      return next();
+    }
+
+    const id = String(ctx.from.id);
+
+    const pending = db.prepare(`
+      SELECT chat_id
+      FROM training_profile_photo_requests
+      WHERE telegram_id=?
+    `).get(id);
+
+    if (!pending || String(ctx.chat.id) !== id || String(pending.chat_id) !== id) {
+      return next();
+    }
+
+    const photo = ctx.message.photo?.[ctx.message.photo.length - 1];
+
+    if (!photo?.file_id) {
+      return next();
+    }
+
+    if (Number(photo.file_size || 0) > 8 * 1024 * 1024) {
+      return ctx.reply(
+        "❌ حجم عکس بیشتر از ۸ مگابایت است. لطفاً عکس کوچک‌تری ارسال کن."
+      );
+    }
+
+    const savePhoto = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO training_profile_photos(
+          telegram_id,photo_file_id,updated_at
+        )
+        VALUES(?,?,?)
+        ON CONFLICT(telegram_id) DO UPDATE SET
+          photo_file_id=excluded.photo_file_id,
+          updated_at=excluded.updated_at
+      `).run(
+        id,
+        photo.file_id,
+        Math.floor(Date.now() / 1000)
+      );
+
+      db.prepare(`
+        DELETE FROM training_profile_photo_requests
+        WHERE telegram_id=?
+      `).run(id);
+    });
+
+    savePhoto();
+
+    await ctx.reply(
+      "✅ عکس دریافت شد. کارت ویدیویی مهارت در کانال مهارت ساخته یا به‌روزرسانی می‌شود."
+    );
+
+    try {
+      await updatePersistentSkillProfile(bot, id);
+    } catch (error) {
+      console.error(
+        "TRAINING_PROFILE_VIDEO_CREATE_ERROR:",
+        error?.description || error?.message || error
+      );
+
+      await ctx.reply(
+        "❌ عکس ذخیره شد، اما ساخت ویدیو با خطا روبه‌رو شد. گزارش خطا ثبت شد."
+      );
+    }
+  });
+
+  // PLAYER CAN REQUEST A NEW CARD PHOTO LATER.
+  bot.hears(/^#تغییر_عکس_کارت$/i, async ctx => {
+    if (!ctx.from || !ctx.chat) return;
+
+    try {
+      await requestTrainingProfilePhoto(
+        bot,
+        String(ctx.from.id),
+        String(ctx.chat.id),
+        true
+      );
+
+      return ctx.reply(
+        "📸 درخواست عکس جدید ارسال شد. عکس را فقط در گفت‌وگوی خصوصی ربات بفرست."
+      );
+
+    } catch (error) {
+      console.error(
+        "TRAINING_PROFILE_PHOTO_REPLACE_ERROR:",
+        error?.description || error?.message || error
+      );
+
+      return ctx.reply(
+        "❌ ارسال درخواست عکس ممکن نشد. ابتدا در گفت‌وگوی خصوصی ربات /start را بزن."
+      );
+    }
+  });
 
   // DELETE PLAYER SKILLS COMMANDS
 
@@ -1445,6 +1793,15 @@ export function registerTraining(bot) {
         SET status='submitted'
         WHERE id=? AND status='active'
       `).run(session.id);
+
+      try {
+        await requestTrainingProfilePhoto(bot, id, chatId);
+      } catch (error) {
+        console.error(
+          "TRAINING_PROFILE_PHOTO_REQUEST_ERROR:",
+          error?.description || error?.message || error
+        );
+      }
 
       return ctx.reply(
         "✅ تمرین برای بررسی به گروه اطلاعات ناظران ارسال شد. پس از تصمیم ناظر، امتیاز و XP ثبت می‌شود."
