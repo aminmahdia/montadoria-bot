@@ -69,9 +69,9 @@ CREATE TABLE IF NOT EXISTS training_profile_posts (
   updated_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS training_profile_photos (
+CREATE TABLE IF NOT EXISTS training_profile_videos (
   telegram_id TEXT PRIMARY KEY,
-  photo_file_id TEXT NOT NULL,
+  video_file_id TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
 
@@ -616,57 +616,39 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
 
 const profileGenerationQueues = new Map();
 
-// DOWNLOAD THE PLAYER'S PRIVATE PROFILE PHOTO
 
-async function getTrainingProfilePhotoBuffer(bot, telegramId) {
+// DOWNLOAD PLAYER PROFILE VIDEO
+async function getTrainingProfileVideoBuffer(bot, telegramId) {
   const saved = db.prepare(`
-    SELECT photo_file_id
-    FROM training_profile_photos
+    SELECT video_file_id FROM training_profile_videos
     WHERE telegram_id=?
   `).get(String(telegramId));
 
-  if (!saved?.photo_file_id) return null;
+  if (!saved?.video_file_id) return null;
 
-  const file = await bot.api.getFile(saved.photo_file_id);
-
-  if (!file?.file_path) {
-    throw new Error("Telegram photo file path is unavailable.");
-  }
+  const file = await bot.api.getFile(saved.video_file_id);
+  if (!file?.file_path) throw new Error("Video file path unavailable.");
 
   const token = process.env.TELEGRAM_BOT_TOKEN;
-
-  if (!token) {
-    throw new Error("TELEGRAM_BOT_TOKEN is not configured.");
-  }
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not configured.");
 
   const response = await fetch(
     `https://api.telegram.org/file/bot${token}/${file.file_path}`
   );
 
-  if (!response.ok) {
-    throw new Error(`Photo download failed: ${response.status}`);
-  }
+  if (!response.ok) throw new Error(`Video download failed: ${response.status}`);
 
   const data = Buffer.from(await response.arrayBuffer());
 
-  if (!data.length || data.length > 8 * 1024 * 1024) {
-    throw new Error("Profile photo exceeds the 8 MB processing limit.");
+  if (!data.length || data.length > 20 * 1024 * 1024) {
+    throw new Error("Profile video exceeds 20 MB.");
   }
 
-  return await sharp(data)
-    .rotate()
-    .resize({
-      width: 480,
-      height: 480,
-      fit: "cover"
-    })
-    .jpeg({ quality: 86 })
-    .toBuffer();
+  return data;
 }
 
-// ASK FOR A PRIVATE PLAYER-SELECTED PHOTO
-
-async function requestTrainingProfilePhoto(
+// REQUEST PLAYER PROFILE VIDEO
+async function requestTrainingProfileVideo(
   bot,
   telegramId,
   fallbackChatId = null,
@@ -675,16 +657,14 @@ async function requestTrainingProfilePhoto(
   const id = String(telegramId);
 
   const saved = db.prepare(`
-    SELECT photo_file_id
-    FROM training_profile_photos
+    SELECT video_file_id FROM training_profile_videos
     WHERE telegram_id=?
   `).get(id);
 
-  if (saved?.photo_file_id && !force) return false;
+  if (saved?.video_file_id && !force) return false;
 
   const pending = db.prepare(`
-    SELECT telegram_id
-    FROM training_profile_photo_requests
+    SELECT telegram_id FROM training_profile_photo_requests
     WHERE telegram_id=?
   `).get(id);
 
@@ -697,39 +677,33 @@ async function requestTrainingProfilePhoto(
     `).run(id);
   }
 
-  const privatePrompt =
-    "📸 برای ساخت کارت ویدیویی مهارت مونتادوریا، یک عکس دلخواه بفرست و به همین پیام پاسخ بده.\n\n" +
-    "عکس باید به‌صورت «Photo» ارسال شود، نه فایل.\n" +
-    "این تصویر در کانال مهارت و همراه کارت ویدیویی تو نمایش داده می‌شود.";
+  const prompt =
+    "🎬 برای کارت مهارت مونتادوریا، یک ویدیوی کوتاه دلخواه ارسال کن.\n\n" +
+    "ویدیو باید به‌صورت Video ارسال شود، نه فایل.\n" +
+    "حداکثر حجم: ۲۰ مگابایت.\n" +
+    "ویدیوی تو در قاب کارت مهارت نمایش داده می‌شود.";
 
-  let privateSent = null;
+  let sent = null;
   let privateError = null;
 
   try {
-    privateSent = await bot.api.sendMessage(
-      id,
-      privatePrompt,
-      {
-        reply_markup: {
-          force_reply: true,
-          input_field_placeholder: "ارسال عکس کارت مهارت"
-        }
+    sent = await bot.api.sendMessage(id, prompt, {
+      reply_markup: {
+        force_reply: true,
+        input_field_placeholder: "ارسال ویدیوی کارت مهارت"
       }
-    );
+    });
   } catch (error) {
     privateError = error;
   }
 
-  let promptMessageId = Number(privateSent?.message_id || 0);
+  const promptMessageId = Number(sent?.message_id || 0);
 
-  if (!privateSent) {
+  if (!sent) {
     const latestReview = db.prepare(`
-      SELECT source_chat_id
-      FROM training_reviews
-      WHERE telegram_id=?
-        AND source_chat_id IS NOT NULL
-      ORDER BY id DESC
-      LIMIT 1
+      SELECT source_chat_id FROM training_reviews
+      WHERE telegram_id=? AND source_chat_id IS NOT NULL
+      ORDER BY id DESC LIMIT 1
     `).get(id);
 
     const fallback = String(
@@ -737,15 +711,12 @@ async function requestTrainingProfilePhoto(
     );
 
     if (!fallback || fallback === id) {
-      throw privateError || new Error(
-        "Unable to open a private photo request."
-      );
+      throw privateError || new Error("Unable to open private video request.");
     }
 
     await bot.api.sendMessage(
       fallback,
-      `📸 بازیکن با شناسه ${id}: برای ساخت کارت مهارت، ابتدا وارد گفت‌وگوی خصوصی ربات شو و /start را بزن؛ سپس عکس دلخواهت را در خصوصی ربات ارسال کن.\n` +
-      "برای حفظ حریم خصوصی، عکس را داخل این گروه نفرست."
+      `🎬 بازیکن ${id}: وارد خصوصی ربات شو، /start را بزن و ویدیوی کوتاهت را ارسال کن.`
     );
   }
 
@@ -758,78 +729,52 @@ async function requestTrainingProfilePhoto(
       chat_id=excluded.chat_id,
       prompt_message_id=excluded.prompt_message_id,
       requested_at=excluded.requested_at
-  `).run(
-    id,
-    id,
-    promptMessageId,
-    Math.floor(Date.now() / 1000)
-  );
+  `).run(id, id, promptMessageId, Math.floor(Date.now() / 1000));
 
   return true;
 }
-
 // RENDER A SHORT, STREAMABLE MP4 VIDEO
-
-async function buildSkillProfileVideo(svg) {
+async function buildSkillProfileVideo(svg, playerVideoBuffer) {
   if (!ffmpegPath) {
     throw new Error("FFmpeg binary was not installed on the host.");
   }
+  if (!playerVideoBuffer?.length) {
+    throw new Error("Player profile video is missing.");
+  }
 
-  const dir = await mkdtemp(
-    join(tmpdir(), "montadoria-skill-profile-")
-  );
-
+  const dir = await mkdtemp(join(tmpdir(), "montadoria-skill-profile-"));
   const pngPath = join(dir, "profile.png");
+  const playerPath = join(dir, "player.mp4");
   const mp4Path = join(dir, "profile.mp4");
 
   try {
-    const pngBuffer = await sharp(Buffer.from(svg))
-      .png()
-      .toBuffer();
-
+    const pngBuffer = await sharp(Buffer.from(svg)).png().toBuffer();
     await writeFile(pngPath, pngBuffer);
+    await writeFile(playerPath, playerVideoBuffer);
 
-    await runFFmpeg(
-      ffmpegPath,
-      [
-        "-hide_banner",
-        "-loglevel", "error",
-        "-y",
-        "-loop", "1",
-        "-framerate", "12",
-        "-i", pngPath,
-        "-vf",
-        "zoompan=z='1+0.012*(1-cos(2*PI*on/36))/2':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1200x720:fps=12,eq=brightness='0.010*sin(2*PI*t/3)':eval=frame",
-        "-frames:v", "36",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-tune", "stillimage",
-        "-crf", "27",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        "-an",
-        "-threads", "1",
-        mp4Path
-      ],
-      {
-        timeout: 120000,
-        maxBuffer: 8 * 1024 * 1024
-      }
-    );
+    await runFFmpeg(ffmpegPath, [
+      "-hide_banner", "-loglevel", "error", "-y",
+      "-loop", "1", "-framerate", "12", "-i", pngPath,
+      "-stream_loop", "-1", "-i", playerPath,
+      "-filter_complex",
+      "[1:v]scale=300:300:force_original_aspect_ratio=increase,crop=300:300,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),145*145),255,0)'[avatar];[0:v][avatar]overlay=78:215,zoompan=z='1+0.012*(1-cos(2*PI*on/36))/2':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1200x720:fps=12,eq=brightness='0.010*sin(2*PI*t/3)':eval=frame[out]",
+      "-map", "[out]",
+      "-frames:v", "36",
+      "-c:v", "libx264", "-preset", "ultrafast", "-crf", "27",
+      "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+      "-an", "-threads", "1", mp4Path
+    ], {
+      timeout: 120000,
+      maxBuffer: 8 * 1024 * 1024
+    });
 
     const info = await stat(mp4Path);
-
     if (!info.size || info.size > 10 * 1024 * 1024) {
       throw new Error("Generated profile video is empty or exceeds 10 MB.");
     }
-
     return await readFile(mp4Path);
-
   } finally {
-    await rm(dir, {
-      recursive: true,
-      force: true
-    }).catch(() => {});
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -866,44 +811,41 @@ async function updatePersistentSkillProfile(bot, telegramId) {
 
     if (!skills.length && !oldPost) return;
 
-    const photoRow = db.prepare(`
-      SELECT photo_file_id
-      FROM training_profile_photos
+    const videoRow = db.prepare(`
+      SELECT video_file_id
+      FROM training_profile_videos
       WHERE telegram_id=?
     `).get(id);
 
-    if (!photoRow?.photo_file_id) {
-      if (skills.length) {
-        await requestTrainingProfilePhoto(bot, id);
-      }
+    if (!videoRow?.video_file_id) {
+      if (skills.length) await requestTrainingProfileVideo(bot, id);
       return;
     }
 
-    let photoBuffer;
+    let playerVideoBuffer;
 
     try {
-      photoBuffer = await getTrainingProfilePhotoBuffer(bot, id);
+      playerVideoBuffer = await getTrainingProfileVideoBuffer(bot, id);
     } catch (error) {
-      console.error(
-        "TRAINING_PROFILE_PHOTO_DOWNLOAD_ERROR:",
-        error?.description || error?.message || error
-      );
-
-      await requestTrainingProfilePhoto(bot, id, null, true);
+      console.error("TRAINING_PROFILE_VIDEO_DOWNLOAD_ERROR:", error?.description || error?.message || error);
+      await requestTrainingProfileVideo(bot, id, null, true);
       return;
     }
 
-    if (!photoBuffer) return;
+    if (!playerVideoBuffer) return;
 
     const svg = profileSvg(
       user,
       skills,
       user.xp,
       user.level,
-      photoBuffer
+      null
     );
 
-    const videoBuffer = await buildSkillProfileVideo(svg);
+    const videoBuffer = await buildSkillProfileVideo(
+      svg,
+      playerVideoBuffer
+    );
 
     const captionRows = skills.slice(0, 8).map(item => {
       const percent = Math.min(
@@ -1162,16 +1104,13 @@ function rejectReview(reviewId, reviewerId, reason) {
 export function registerTraining(bot) {
 
   // ONLY ACCEPT THE REQUESTED PHOTO IN THE PLAYER'S PRIVATE CHAT.
-  bot.on("message:photo", async (ctx, next) => {
-    if (!ctx.from || !ctx.chat || ctx.chat.type !== "private") {
-      return next();
-    }
+  bot.on("message:video", async (ctx, next) => {
+    if (!ctx.from || !ctx.chat || ctx.chat.type !== "private") return next();
 
     const id = String(ctx.from.id);
 
     const pending = db.prepare(`
-      SELECT chat_id
-      FROM training_profile_photo_requests
+      SELECT chat_id FROM training_profile_photo_requests
       WHERE telegram_id=?
     `).get(id);
 
@@ -1179,84 +1118,53 @@ export function registerTraining(bot) {
       return next();
     }
 
-    const photo = ctx.message.photo?.[ctx.message.photo.length - 1];
+    const video = ctx.message.video;
+    if (!video?.file_id) return next();
 
-    if (!photo?.file_id) {
-      return next();
+    if (Number(video.file_size || 0) > 20 * 1024 * 1024) {
+      return ctx.reply("❌ حجم ویدیو بیشتر از ۲۰ مگابایت است.");
     }
 
-    if (Number(photo.file_size || 0) > 8 * 1024 * 1024) {
-      return ctx.reply(
-        "❌ حجم عکس بیشتر از ۸ مگابایت است. لطفاً عکس کوچک‌تری ارسال کن."
-      );
-    }
+    db.prepare(`
+      INSERT INTO training_profile_videos(
+        telegram_id,video_file_id,updated_at
+      )
+      VALUES(?,?,?)
+      ON CONFLICT(telegram_id) DO UPDATE SET
+        video_file_id=excluded.video_file_id,
+        updated_at=excluded.updated_at
+    `).run(id, video.file_id, Math.floor(Date.now() / 1000));
 
-    const savePhoto = db.transaction(() => {
-      db.prepare(`
-        INSERT INTO training_profile_photos(
-          telegram_id,photo_file_id,updated_at
-        )
-        VALUES(?,?,?)
-        ON CONFLICT(telegram_id) DO UPDATE SET
-          photo_file_id=excluded.photo_file_id,
-          updated_at=excluded.updated_at
-      `).run(
-        id,
-        photo.file_id,
-        Math.floor(Date.now() / 1000)
-      );
+    db.prepare(`
+      DELETE FROM training_profile_photo_requests
+      WHERE telegram_id=?
+    `).run(id);
 
-      db.prepare(`
-        DELETE FROM training_profile_photo_requests
-        WHERE telegram_id=?
-      `).run(id);
-    });
-
-    savePhoto();
-
-    await ctx.reply(
-      "✅ عکس دریافت شد. کارت ویدیویی مهارت در کانال مهارت ساخته یا به‌روزرسانی می‌شود."
-    );
+    await ctx.reply("✅ ویدیو دریافت شد. کارت مهارت در حال به‌روزرسانی است.");
 
     try {
       await updatePersistentSkillProfile(bot, id);
     } catch (error) {
-      console.error(
-        "TRAINING_PROFILE_VIDEO_CREATE_ERROR:",
-        error?.description || error?.message || error
-      );
-
-      await ctx.reply(
-        "❌ عکس ذخیره شد، اما ساخت ویدیو با خطا روبه‌رو شد. گزارش خطا ثبت شد."
-      );
+      console.error("TRAINING_PROFILE_VIDEO_CREATE_ERROR:", error?.description || error?.message || error);
+      await ctx.reply("❌ ساخت کارت ویدیویی با خطا مواجه شد.");
     }
   });
 
-  // PLAYER CAN REQUEST A NEW CARD PHOTO LATER.
-  bot.hears(/^#تغییر_عکس_کارت$/i, async ctx => {
+  bot.hears(/^#تغییر_ویدئو_کارت$/i, async ctx => {
     if (!ctx.from || !ctx.chat) return;
 
     try {
-      await requestTrainingProfilePhoto(
+      await requestTrainingProfileVideo(
         bot,
         String(ctx.from.id),
         String(ctx.chat.id),
         true
       );
 
-      return ctx.reply(
-        "📸 درخواست عکس جدید ارسال شد. عکس را فقط در گفت‌وگوی خصوصی ربات بفرست."
-      );
-
+      return ctx.reply("🎬 ویدیوی جدید کارت مهارت را در خصوصی ربات ارسال کن.");
     } catch (error) {
-      console.error(
-        "TRAINING_PROFILE_PHOTO_REPLACE_ERROR:",
-        error?.description || error?.message || error
-      );
-
-      return ctx.reply(
-        "❌ ارسال درخواست عکس ممکن نشد. ابتدا در گفت‌وگوی خصوصی ربات /start را بزن."
-      );
+      console.error("TRAINING_PROFILE_VIDEO_REPLACE_ERROR:", error?.description || error?.message || error);
+      return ctx.reply("❌ ابتدا در خصوصی ربات /start را بزن.");
     }
   });
 
@@ -1795,7 +1703,7 @@ export function registerTraining(bot) {
       `).run(session.id);
 
       try {
-        await requestTrainingProfilePhoto(bot, id, chatId);
+        await requestTrainingProfileVideo(bot, id, chatId);
       } catch (error) {
         console.error(
           "TRAINING_PROFILE_PHOTO_REQUEST_ERROR:",
