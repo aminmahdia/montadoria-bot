@@ -472,29 +472,38 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
     user.display_name || "MONTADORIA PLAYER"
   );
 
-  const photo = photoBuffer
-    ? `<image href="data:image/jpeg;base64,${photoBuffer.toString("base64")}" x="78" y="215" width="300" height="300" preserveAspectRatio="xMidYMid slice" clip-path="url(#avatarClip)"/>`
-    : `<circle cx="228" cy="365" r="145" fill="#241b31"/><text x="228" y="390" text-anchor="middle" font-size="88" fill="#d8b36a">${escapeSvg((user.display_name || "M").trim().slice(0, 1).toUpperCase())}</text>`;
+  const rows = Array.isArray(skills)
+    ? skills.slice(0, PROFILE_SKILLS_LIMIT)
+    : [];
 
-  const rows = skills.slice(0, PROFILE_SKILLS_LIMIT);
+  const photo = photoBuffer
+    ? `<image href="data:image/jpeg;base64,${photoBuffer.toString("base64")}" x="470" y="220" width="260" height="260" preserveAspectRatio="xMidYMid slice" clip-path="url(#avatarClip)"/>`
+    : `<circle cx="600" cy="350" r="126" fill="#170d20"/>
+       <text x="600" y="370" text-anchor="middle" font-size="76" fill="#d8b36a">${escapeSvg((user.display_name || "M").trim().slice(0, 1).toUpperCase())}</text>`;
+
+  const placements = [
+    { x: 280, y: 265, side: "left" },
+    { x: 920, y: 265, side: "right" },
+    { x: 280, y: 465, side: "left" },
+    { x: 920, y: 465, side: "right" }
+  ];
 
   const glowFilters = rows.map((skill, index) => {
     const percent = Math.min(
       100,
-      Math.max(
-        0,
-        Math.round(Number(skill.points || 0) / SKILL_MASTERY_POINTS * 100)
-      )
+      Math.max(0, Math.round(
+        Number(skill.points || 0) / SKILL_MASTERY_POINTS * 100
+      ))
     );
 
     const glowColor =
-      percent >= 100 ? "#ff75da" :
-      percent >= 75 ? "#bd68ff" :
-      percent >= 50 ? "#46c9ff" :
-      percent >= 25 ? "#ffd34e" : "#ff713b";
+      percent >= 100 ? "#ff8ed8" :
+      percent >= 75 ? "#c27aff" :
+      percent >= 50 ? "#58cfff" :
+      percent >= 25 ? "#ffd16d" : "#ff7547";
 
-    const blur = (2 + percent * 0.09).toFixed(1);
-    const opacity = (0.18 + percent * 0.0075).toFixed(2);
+    const blur = (2.5 + percent * 0.12).toFixed(1);
+    const opacity = (0.20 + percent * 0.007).toFixed(2);
 
     return `<filter id="weaponGlow${index}" x="-100%" y="-100%" width="300%" height="300%">
       <feGaussianBlur in="SourceGraphic" stdDeviation="${blur}" result="blur"/>
@@ -506,39 +515,141 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
 
   const skillMarkup = rows.length
     ? rows.map((skill, index) => {
-        const y = 245 + index * 104;
+        const pos = placements[index];
 
         const percent = Math.min(
           100,
-          Math.max(
-            0,
-            Math.round(
-              Number(skill.points || 0) /
-              SKILL_MASTERY_POINTS * 100
-            )
-          )
+          Math.max(0, Math.round(
+            Number(skill.points || 0) / SKILL_MASTERY_POINTS * 100
+          ))
         );
 
         const color = fireColor(percent);
 
+        const glowColor =
+          percent >= 100 ? "#ff8ed8" :
+          percent >= 75 ? "#c27aff" :
+          percent >= 50 ? "#58cfff" :
+          percent >= 25 ? "#ffd16d" : "#ff7547";
+
+        const blur = (2.5 + percent * 0.12).toFixed(1);
+        const flameOpacity = (0.12 + percent * 0.0065).toFixed(2);
+        const weaponScale = (0.82 + percent * 0.003).toFixed(3);
+        const strokeWidth = (3 + percent * 0.035).toFixed(1);
+
+        const nameX = pos.side === "left" ? 345 : 855;
+        const anchor = pos.side === "left" ? "start" : "end";
+        const percentX = pos.side === "left" ? 450 : 750;
+
+        const skillName = String(skill.skill || "مهارت").toLowerCase();
+        let weapon;
+
+        if (/شمشیر|sword/.test(skillName)) {
+          weapon = `
+            <path d="M0,-45 L8,-7 L5,7 L-5,7 L-8,-7 Z"
+                  fill="${color}" stroke="#fff0c7" stroke-width="2"/>
+            <path d="M-21,8 H21 M0,7 V36 M-9,36 H9"
+                  fill="none" stroke="#d9b36c"
+                  stroke-width="${strokeWidth}" stroke-linecap="round"/>
+          `;
+        } else if (/خنجر|چاقو|dagger|knife/.test(skillName)) {
+          weapon = `
+            <path d="M0,-39 L10,5 L0,15 L-10,5 Z"
+                  fill="${color}" stroke="#fff0c7" stroke-width="2"/>
+            <path d="M-17,15 H17 M0,15 V36 M-8,36 H8"
+                  fill="none" stroke="#d9b36c"
+                  stroke-width="${strokeWidth}" stroke-linecap="round"/>
+          `;
+        } else if (/تفنگ|اسلحه|تیراندازی|gun|rifle|shoot/.test(skillName)) {
+          weapon = `
+            <path d="M-43,-10 H34 L47,-3 H16 L11,8 H-4 L-11,0 H-43 Z"
+                  fill="${color}" stroke="#ffe6ba" stroke-width="2"
+                  stroke-linejoin="round"/>
+            <path d="M-7,7 L-2,29 L11,29 L14,7 M-29,-10 V-19 H-8 V-10"
+                  fill="none" stroke="#d9b36c"
+                  stroke-width="${strokeWidth}" stroke-linejoin="round"/>
+          `;
+        } else if (/کمان|archery|bow/.test(skillName)) {
+          weapon = `
+            <path d="M-13,-43 C39,-26 39,26 -13,43"
+                  fill="none" stroke="${color}"
+                  stroke-width="${Number(strokeWidth) + 1}"
+                  stroke-linecap="round"/>
+            <path d="M-13,-43 L-13,43 M-13,0 H43 M30,-8 L43,0 L30,8"
+                  fill="none" stroke="#ffe6ba" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          `;
+        } else if (/تبر|axe/.test(skillName)) {
+          weapon = `
+            <path d="M-3,-42 L3,42" stroke="#d9b36c"
+                  stroke-width="${Number(strokeWidth) + 2}" stroke-linecap="round"/>
+            <path d="M0,-38 C28,-49 47,-29 39,-8 C29,2 14,1 2,-3 Z"
+                  fill="${color}" stroke="#ffe6ba" stroke-width="2"/>
+          `;
+        } else if (/نیزه|spear/.test(skillName)) {
+          weapon = `
+            <path d="M0,-46 L0,43" stroke="#d9b36c"
+                  stroke-width="${Number(strokeWidth) + 2}" stroke-linecap="round"/>
+            <path d="M0,-49 L13,-18 L0,-24 L-13,-18 Z"
+                  fill="${color}" stroke="#ffe6ba" stroke-width="2"/>
+          `;
+        } else if (/مشت|بوکس|boxing|拳/.test(skillName)) {
+          weapon = `
+            <path d="M-34,-8 C-38,-23 -22,-30 -12,-20 L-6,-12 L-4,-28
+                     C-2,-40 13,-39 15,-26 L17,-13 L22,-27
+                     C27,-38 41,-31 37,-18 L31,15
+                     C27,30 14,37 -3,34 L-22,27
+                     C-33,22 -38,5 -34,-8 Z"
+                  fill="${color}" stroke="#ffe6ba" stroke-width="2"/>
+            <path d="M-24,13 L24,13" stroke="#8d2132" stroke-width="5"/>
+          `;
+        } else {
+          weapon = `
+            <path d="M0,-45 L10,-7 L5,7 L-5,7 L-10,-7 Z"
+                  fill="${color}" stroke="#fff0c7" stroke-width="2"/>
+            <path d="M-21,8 H21 M0,7 V36 M-9,36 H9"
+                  fill="none" stroke="#d9b36c"
+                  stroke-width="${strokeWidth}" stroke-linecap="round"/>
+          `;
+        }
+
         return `
           <g>
-            <circle cx="532" cy="${y - 10}" r="${Math.round(23 + percent * 0.08)}" fill="${color}" opacity="${(0.035 + percent / 100 * 0.15).toFixed(3)}"/>
-            <text x="520" y="${y}" font-size="${Math.round(40 + percent * 0.12)}" fill="#fff1cf" filter="url(#weaponGlow${index})" opacity="${(0.62 + percent / 100 * 0.38).toFixed(2)}">${escapeSvg(weaponIcon(skill.skill))}</text>
+            <g transform="translate(${pos.x} ${pos.y})">
+              <ellipse cx="0" cy="0"
+                       rx="${46 + percent * 0.10}"
+                       ry="${38 + percent * 0.08}"
+                       fill="url(#fireAura)" opacity="${flameOpacity}"/>
 
-            <text x="575" y="${y}" font-size="25" fill="#f4e9d2" direction="rtl" unicode-bidi="plaintext">${escapeSvg(String(skill.skill).slice(0, 24))}</text>
+              <path d="M-25,27 C-44,4 -20,-13 -23,-38
+                       C-3,-20 -11,-7 0,1
+                       C10,-14 10,-28 18,-43
+                       C40,-14 34,10 19,29 Z"
+                    fill="${glowColor}" opacity="${flameOpacity}"
+                    filter="url(#weaponGlow${index})"/>
 
-            <text x="1045" y="${y}" font-size="22" fill="#d9c8a7" text-anchor="end">${percent}%</text>
+              <g transform="scale(${weaponScale})"
+                 filter="url(#weaponGlow${index})">
+                ${weapon}
+              </g>
+            </g>
 
+            <text x="${nameX}" y="${pos.y - 5}"
+                  text-anchor="${anchor}" font-size="21"
+                  font-weight="bold" fill="#f3e4c7"
+                  direction="rtl" unicode-bidi="plaintext">${escapeSvg(String(skill.skill || "مهارت").slice(0, 12))}</text>
 
-            <text x="575" y="${y + 64}" font-size="16" fill="#a99cb3">${Number(skill.points || 0)} امتیاز · ${Number(skill.sessions || 0)} تمرین</text>
+            <text x="${nameX}" y="${pos.y + 28}"
+                  text-anchor="${anchor}" font-size="15"
+                  fill="#b9a7bd">${Number(skill.points || 0)} امتیاز · ${Number(skill.sessions || 0)} تمرین</text>
 
-            <path d="M0,-36 C-26,-5 -30,12 -14,28 C-3,39 18,34 24,18 C32,0 15,-20 0,-36 Z" transform="translate(1090 ${y + 5})" fill="${color}" stroke="#ffe2a2" stroke-width="2"/>
-
-            <path d="M0,-15 C-11,-2 -12,8 -4,15 C3,20 12,12 9,4 C7,-3 3,-9 0,-15 Z" transform="translate(1090 ${y + 5})" fill="#fff0bd" opacity=".9"/>
+            <text x="${percentX}" y="${pos.y + 28}"
+                  text-anchor="middle" font-size="17"
+                  font-weight="bold" fill="${color}">${percent}%</text>
           </g>`;
       }).join("")
-    : `<text x="575" y="280" font-size="26" fill="#d9c8a7">هنوز مهارتی ثبت نشده است.</text>`;
+    : `<text x="600" y="545" text-anchor="middle"
+             font-size="22" fill="#d9c8a7">هنوز مهارتی ثبت نشده است.</text>`;
 
   return `
   <svg xmlns="http://www.w3.org/2000/svg"
@@ -548,15 +659,16 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
 
     <defs>
       <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#0b0a10"/>
-        <stop offset=".55" stop-color="#21152d"/>
-        <stop offset="1" stop-color="#09090d"/>
+        <stop offset="0" stop-color="#030305"/>
+        <stop offset=".38" stop-color="#100817"/>
+        <stop offset=".72" stop-color="#260b20"/>
+        <stop offset="1" stop-color="#050407"/>
       </linearGradient>
 
       <linearGradient id="gold" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0" stop-color="#8f6c35"/>
+        <stop offset="0" stop-color="#765324"/>
         <stop offset=".5" stop-color="#f4d58b"/>
-        <stop offset="1" stop-color="#8f6c35"/>
+        <stop offset="1" stop-color="#765324"/>
       </linearGradient>
 
       <linearGradient id="rainbowFire" x1="0" y1="0" x2="1" y2="1">
@@ -568,51 +680,108 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
         <stop offset="1" stop-color="#c15cff"/>
       </linearGradient>
 
+      <radialGradient id="fireAura">
+        <stop offset="0" stop-color="#fff0c4" stop-opacity=".85"/>
+        <stop offset=".35" stop-color="#ff8d44" stop-opacity=".55"/>
+        <stop offset="1" stop-color="#a51d50" stop-opacity="0"/>
+      </radialGradient>
+
       <clipPath id="avatarClip">
-        <circle cx="228" cy="365" r="145"/>
+        <circle cx="600" cy="350" r="126"/>
       </clipPath>
 
-      <pattern id="grain" width="48" height="48" patternUnits="userSpaceOnUse">
-        <path d="M0 24H48 M24 0V48" stroke="#ffffff" stroke-opacity=".025" stroke-width="1"/>
+      <pattern id="grain" width="48" height="48"
+               patternUnits="userSpaceOnUse">
+        <path d="M0 24H48 M24 0V48"
+              stroke="#ffffff" stroke-opacity=".025" stroke-width="1"/>
       </pattern>
 
       ${glowFilters}
     </defs>
 
-    <rect width="1200" height="720" rx="34" fill="url(#bg)"/>
-    <rect width="1200" height="720" rx="34" fill="url(#grain)"/>
+    <rect width="1200" height="720" fill="url(#bg)"/>
+    <rect width="1200" height="720" fill="url(#grain)"/>
 
-    <rect x="18" y="18" width="1164" height="684" rx="28" fill="none" stroke="url(#gold)" stroke-width="3"/>
+    <rect x="18" y="18" width="1164" height="684" rx="24"
+          fill="none" stroke="url(#gold)" stroke-width="3"/>
 
-    <path d="M55 150H1145" stroke="#b99659" stroke-opacity=".55" stroke-width="2"/>
+    <rect x="29" y="29" width="1142" height="662" rx="18"
+          fill="none" stroke="#743e69" stroke-width="1" opacity=".65"/>
 
-    <text x="600" y="75" text-anchor="middle" font-size="35" font-weight="700" letter-spacing="8" fill="#f0d89d">MONTADORIA</text>
+    <path d="M60 145 H1140" stroke="url(#gold)"
+          stroke-width="1.5" opacity=".65"/>
 
-    <text x="600" y="116" text-anchor="middle" font-size="17" letter-spacing="5" fill="#bda77b">PERMANENT SKILL ARCHIVE</text>
+    <path d="M60 650 H1140" stroke="#8c633c"
+          stroke-width="1" opacity=".55"/>
+
+    <g transform="translate(112 91)" fill="none"
+       stroke="#c49c58" stroke-width="3" stroke-linejoin="round">
+      <path d="M-35,-29 L-17,-13 L0,-24 L17,-13 L35,-29
+               L29,5 L17,27 L0,39 L-17,27 L-29,5 Z"/>
+      <path d="M-19,1 L-5,7 L-18,13 M19,1 L5,7 L18,13
+               M-8,24 L0,29 L8,24"/>
+      <path d="M-35,-29 L-30,-5 M35,-29 L30,-5"/>
+    </g>
+
+    <g transform="translate(1088 91)" fill="none"
+       stroke="#d9b36c" stroke-width="3" stroke-linejoin="round">
+      <path d="M0,-39 C-19,-25 -19,-7 0,5
+               C19,-7 19,-25 0,-39 Z"/>
+      <path d="M0,5 C-22,-1 -31,12 -22,27
+               C-10,30 -3,22 0,5 Z"/>
+      <path d="M0,5 C22,-1 31,12 22,27
+               C10,30 3,22 0,5 Z"/>
+      <path d="M0,5 V40 M-15,40 H15"/>
+    </g>
+
+    <text x="600" y="78" text-anchor="middle" font-size="36"
+          font-weight="bold" letter-spacing="8"
+          fill="url(#gold)">MONTADORIA</text>
+
+    <text x="600" y="113" text-anchor="middle" font-size="15"
+          letter-spacing="5" fill="#bba4c4">
+      WOLF · FLEUR-DE-LIS · MASTERY
+    </text>
+
+    <text x="600" y="183" text-anchor="middle" font-size="19"
+          letter-spacing="4" fill="#d6b873">
+      PLAYER SKILL ARCHIVE
+    </text>
+
+    <circle cx="600" cy="350" r="139" fill="#100817"
+            stroke="#795333" stroke-width="2"/>
+
+    <circle cx="600" cy="350" r="133" fill="none"
+            stroke="url(#gold)" stroke-width="5"/>
 
     ${photo}
 
-    <circle cx="228" cy="365" r="155" fill="none" stroke="url(#gold)" stroke-width="8"/>
-
-    <text x="228" y="565" text-anchor="middle" font-size="27" fill="#f4e3bb">${escapeSvg(displayName.slice(0, 36))}</text>
-
-    <text x="228" y="600" text-anchor="middle" font-size="17" fill="#b7a5c2">TELEGRAM ID · ${escapeSvg(user.telegram_id)}</text>
-
-    <text x="520" y="190" font-size="24" fill="#d8b36a" letter-spacing="3">WEAPON MASTERY</text>
+    <circle cx="600" cy="350" r="129" fill="none"
+            stroke="#a45d91" stroke-width="2" opacity=".75"/>
 
     ${skillMarkup}
 
-    <path d="M520 670H1145" stroke="#8b6a3d" stroke-opacity=".6"/>
+    <text x="600" y="535" text-anchor="middle"
+          font-size="25" fill="#f1dcae">
+      ${escapeSvg(String(displayName).slice(0, 32))}
+    </text>
 
-    <text x="575" y="656" font-size="20" fill="#ddc99d">XP ${Number(xp || 0)}</text>
+    <text x="600" y="574" text-anchor="middle"
+          font-size="18" fill="#d6b873">
+      XP ${Number(xp || 0)}  ·  LEVEL ${Number(level || 1)}
+    </text>
 
-    <text x="900" y="656" font-size="20" fill="#ddc99d">LEVEL ${Number(level || 1)}</text>
+    <text x="600" y="610" text-anchor="middle"
+          font-size="15" fill="#a995b2">
+      TELEGRAM ID · ${escapeSvg(user.telegram_id)}
+    </text>
 
-    <text x="1140" y="656" text-anchor="end" font-size="15" fill="#9c8ba6">100% = CHROMATIC FLAME</text>
+    <text x="600" y="675" text-anchor="middle"
+          font-size="13" letter-spacing="4" fill="#80658e">
+      THE FIRST CIRCLE · MONTADORIA
+    </text>
   </svg>`;
 }
-
-// TRAINING PROFILE VIDEO V1
 
 const profileGenerationQueues = new Map();
 
@@ -738,6 +907,7 @@ async function buildSkillProfileVideo(svg, playerVideoBuffer) {
   if (!ffmpegPath) {
     throw new Error("FFmpeg binary was not installed on the host.");
   }
+
   if (!playerVideoBuffer?.length) {
     throw new Error("Player profile video is missing.");
   }
@@ -752,26 +922,46 @@ async function buildSkillProfileVideo(svg, playerVideoBuffer) {
     await writeFile(pngPath, pngBuffer);
     await writeFile(playerPath, playerVideoBuffer);
 
-    await runFFmpeg(ffmpegPath, [
+    const makeArgs = crf => [
       "-hide_banner", "-loglevel", "error", "-y",
-      "-loop", "1", "-framerate", "12", "-i", pngPath,
-      "-stream_loop", "-1", "-i", playerPath,
+      "-loop", "1", "-framerate", "30", "-i", pngPath,
+      "-i", playerPath,
       "-filter_complex",
-      "[1:v]scale=300:300:force_original_aspect_ratio=increase,crop=300:300,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),145*145),255,0)'[avatar];[0:v][avatar]overlay=78:215,zoompan=z='1+0.012*(1-cos(2*PI*on/36))/2':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1200x720:fps=12,eq=brightness='0.010*sin(2*PI*t/3)':eval=frame[out]",
+      "[1:v]scale=260:260:force_original_aspect_ratio=increase,crop=260:260,fps=30,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),126*126),255,0)'[avatar];[0:v][avatar]overlay=470:220:shortest=1:eof_action=endall,eq=brightness='0.004+0.006*sin(2*PI*t/2.8)':eval=frame,format=yuv420p[out]",
       "-map", "[out]",
-      "-frames:v", "36",
-      "-c:v", "libx264", "-preset", "ultrafast", "-crf", "27",
-      "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-      "-an", "-threads", "1", mp4Path
-    ], {
-      timeout: 120000,
+      "-shortest",
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-crf", String(crf),
+      "-pix_fmt", "yuv420p",
+      "-movflags", "+faststart",
+      "-an",
+      "-threads", "1",
+      mp4Path
+    ];
+
+    await runFFmpeg(ffmpegPath, makeArgs(30), {
+      timeout: 300000,
       maxBuffer: 8 * 1024 * 1024
     });
 
-    const info = await stat(mp4Path);
-    if (!info.size || info.size > 10 * 1024 * 1024) {
-      throw new Error("Generated profile video is empty or exceeds 10 MB.");
+    let info = await stat(mp4Path);
+
+    if (info.size > 45 * 1024 * 1024) {
+      await runFFmpeg(ffmpegPath, makeArgs(34), {
+        timeout: 300000,
+        maxBuffer: 8 * 1024 * 1024
+      });
+
+      info = await stat(mp4Path);
     }
+
+    if (!info.size || info.size > 45 * 1024 * 1024) {
+      throw new Error(
+        "Generated profile video is empty or exceeds the safe 45 MB limit."
+      );
+    }
+
     return await readFile(mp4Path);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
