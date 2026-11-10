@@ -89,6 +89,14 @@ CREATE TABLE IF NOT EXISTS training_reject_wait (
 );
 `);
 
+db.exec(`
+CREATE TABLE IF NOT EXISTS training_profile_video_request_once (
+  telegram_id TEXT PRIMARY KEY,
+  requested_at INTEGER NOT NULL
+);
+`);
+
+
 function ensureColumn(table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
 
@@ -534,23 +542,31 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
 
         const blur = (2.5 + percent * 0.12).toFixed(1);
         const flameOpacity = (0.12 + percent * 0.0065).toFixed(2);
-        const weaponScale = (0.82 + percent * 0.003).toFixed(3);
+        const weaponScale = "1.35";
         const strokeWidth = (3 + percent * 0.035).toFixed(1);
 
-        const nameX = pos.side === "left" ? 345 : 855;
-        const anchor = pos.side === "left" ? "start" : "end";
-        const percentX = pos.side === "left" ? 450 : 750;
 
         const skillName = String(skill.skill || "مهارت").toLowerCase();
         let weapon;
 
         if (/شمشیر|sword/.test(skillName)) {
           weapon = `
-            <path d="M0,-45 L8,-7 L5,7 L-5,7 L-8,-7 Z"
-                  fill="${color}" stroke="#fff0c7" stroke-width="2"/>
-            <path d="M-21,8 H21 M0,7 V36 M-9,36 H9"
-                  fill="none" stroke="#d9b36c"
-                  stroke-width="${strokeWidth}" stroke-linecap="round"/>
+            <path d="M0,-72 L13,-13 L9,7 L-9,7 L-13,-13 Z"
+                  fill="${color}" stroke="#fff0c7"
+                  stroke-width="${strokeWidth}" stroke-linejoin="round"/>
+            <path d="M0,-65 V2" stroke="#fff8df"
+                  stroke-width="2.2" opacity=".9"/>
+            <path d="M-32,5 Q0,17 32,5"
+                  fill="none" stroke="#f0cf8b"
+                  stroke-width="${Number(strokeWidth) + 2}"
+                  stroke-linecap="round"/>
+            <path d="M0,13 V57"
+                  stroke="#b77b43" stroke-width="13"
+                  stroke-linecap="round"/>
+            <path d="M-6,23 L6,30 M-6,35 L6,42 M-6,47 L6,54"
+                  stroke="#f1d5a0" stroke-width="2.5"/>
+            <path d="M-13,59 Q0,76 13,59 L9,54 H-9 Z"
+                  fill="#d9b36c" stroke="#fff0c7" stroke-width="2"/>
           `;
         } else if (/خنجر|چاقو|dagger|knife/.test(skillName)) {
           weapon = `
@@ -615,18 +631,11 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
 
         return `
           <g>
-            <g transform="translate(${pos.x} ${pos.y})">
+            <g data-flame-x="${pos.x}" data-flame-y="${pos.y}" data-flame-level="${percent}" transform="translate(${pos.x} ${pos.y})">
               <ellipse cx="0" cy="0"
                        rx="${46 + percent * 0.10}"
                        ry="${38 + percent * 0.08}"
                        fill="url(#fireAura)" opacity="${flameOpacity}"/>
-
-              <path d="M-25,27 C-44,4 -20,-13 -23,-38
-                       C-3,-20 -11,-7 0,1
-                       C10,-14 10,-28 18,-43
-                       C40,-14 34,10 19,29 Z"
-                    fill="${glowColor}" opacity="${flameOpacity}"
-                    filter="url(#weaponGlow${index})"/>
 
               <g transform="scale(${weaponScale})"
                  filter="url(#weaponGlow${index})">
@@ -634,18 +643,6 @@ function profileSvg(user, skills, xp, level, photoBuffer) {
               </g>
             </g>
 
-            <text x="${nameX}" y="${pos.y - 5}"
-                  text-anchor="${anchor}" font-size="21"
-                  font-weight="bold" fill="#f3e4c7"
-                  direction="rtl" unicode-bidi="plaintext">${escapeSvg(String(skill.skill || "مهارت").slice(0, 12))}</text>
-
-            <text x="${nameX}" y="${pos.y + 28}"
-                  text-anchor="${anchor}" font-size="15"
-                  fill="#b9a7bd">${Number(skill.points || 0)} امتیاز · ${Number(skill.sessions || 0)} تمرین</text>
-
-            <text x="${percentX}" y="${pos.y + 28}"
-                  text-anchor="middle" font-size="17"
-                  font-weight="bold" fill="${color}">${percent}%</text>
           </g>`;
       }).join("")
     : `<text x="600" y="545" text-anchor="middle"
@@ -839,6 +836,28 @@ async function requestTrainingProfileVideo(
 
   if (pending && !force) return true;
 
+  if (!force) {
+    const requestedBefore = db.prepare(`
+      SELECT telegram_id FROM training_profile_video_request_once
+      WHERE telegram_id=?
+    `).get(id);
+
+    if (requestedBefore) return false;
+
+    db.prepare(`
+      INSERT OR IGNORE INTO training_profile_video_request_once(
+        telegram_id, requested_at
+      ) VALUES(?,?)
+    `).run(id, Math.floor(Date.now() / 1000));
+  } else {
+    db.prepare(`
+      INSERT INTO training_profile_video_request_once(telegram_id, requested_at)
+      VALUES(?,?)
+      ON CONFLICT(telegram_id) DO UPDATE SET
+        requested_at=excluded.requested_at
+    `).run(id, Math.floor(Date.now() / 1000));
+  }
+
   if (force) {
     db.prepare(`
       DELETE FROM training_profile_photo_requests
@@ -878,10 +897,18 @@ async function requestTrainingProfileVideo(
       throw privateError || new Error("Unable to open private video request.");
     }
 
-    await bot.api.sendMessage(
-      fallback,
-      `🎬 بازیکن ${id}: وارد خصوصی ربات شو، /start را بزن و ویدیوی کوتاهت را ارسال کن.`
-    );
+    try {
+      await bot.api.sendMessage(
+        fallback,
+        `🎬 بازیکن ${id}: وارد خصوصی ربات شو، /start را بزن و ویدیوی کوتاهت را ارسال کن.`
+      );
+    } catch (error) {
+      db.prepare(`
+        DELETE FROM training_profile_video_request_once
+        WHERE telegram_id=?
+      `).run(id);
+      throw error;
+    }
   }
 
   db.prepare(`
@@ -899,13 +926,8 @@ async function requestTrainingProfileVideo(
 }
 // RENDER A SHORT, STREAMABLE MP4 VIDEO
 async function buildSkillProfileVideo(svg, playerVideoBuffer) {
-  if (!ffmpegPath) {
-    throw new Error("FFmpeg binary was not installed on the host.");
-  }
-
-  if (!playerVideoBuffer?.length) {
-    throw new Error("Player profile video is missing.");
-  }
+  if (!ffmpegPath) throw new Error("FFmpeg binary was not installed on the host.");
+  if (!playerVideoBuffer?.length) throw new Error("Player profile video is missing.");
 
   const dir = await mkdtemp(join(tmpdir(), "montadoria-skill-profile-"));
   const pngPath = join(dir, "profile.png");
@@ -913,48 +935,101 @@ async function buildSkillProfileVideo(svg, playerVideoBuffer) {
   const mp4Path = join(dir, "profile.mp4");
 
   try {
-    const pngBuffer = await sharp(Buffer.from(svg)).png().toBuffer();
-    await writeFile(pngPath, pngBuffer);
+    await writeFile(pngPath, await sharp(Buffer.from(svg)).png().toBuffer());
     await writeFile(playerPath, playerVideoBuffer);
+
+    const flames = Array.from(
+      svg.matchAll(/data-flame-x="(\d+)" data-flame-y="(\d+)" data-flame-level="(\d+)"/g),
+      m => ({
+        x: Number(m[1]),
+        y: Number(m[2]),
+        level: Math.max(0, Math.min(100, Number(m[3]))) / 100
+      })
+    );
+
+    const frameCount = 24;
+
+    for (let frame = 0; frame < frameCount; frame++) {
+      const markup = flames.map((item, index) => {
+        const intensity = 0.30 + item.level * 0.68;
+
+        const tongues = Array.from({ length: 5 }, (_, j) => {
+          const phase = frame * 0.72 + index * 1.91 + j * 1.37;
+          const flicker = 0.76 + 0.24 * Math.sin(phase);
+          const height = (42 + item.level * 65) * flicker;
+          const width = 7 + item.level * 8;
+          const x = [-30, -15, 0, 15, 30][j];
+          const drift = Math.sin(phase * 1.4) * (4 + item.level * 6);
+          const base = 48;
+          const tip = base - height;
+
+          return `
+            <path d="M${x-6},${base}
+              C${x-width+drift},${base-18}
+               ${x-width},${tip+height*.42}
+               ${x+drift},${tip}
+              C${x+width},${tip+height*.38}
+               ${x+width},${base-15}
+               ${x+6},${base} Z"
+              fill="#ff5728" opacity="${intensity}" filter="url(#fireGlow)"/>
+            <path d="M${x-3},${base-2}
+              C${x-5},${base-24}
+               ${x+drift*.5},${tip+height*.35}
+               ${x+drift*.4},${tip+9}
+              C${x+8},${tip+height*.55}
+               ${x+5},${base-16}
+               ${x+3},${base-2} Z"
+              fill="#ffd36d" opacity="${intensity*.78}"/>
+          `;
+        }).join("");
+
+        return `<g transform="translate(${item.x} ${item.y})">${tongues}</g>`;
+      }).join("");
+
+      const flameSvg = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720">
+          <defs>
+            <filter id="fireGlow" x="-100%" y="-100%" width="300%" height="300%">
+              <feGaussianBlur stdDeviation="4"/>
+            </filter>
+          </defs>
+          ${markup}
+        </svg>`;
+
+      const framePath = join(dir, `flame-${String(frame).padStart(3, "0")}.png`);
+      await writeFile(framePath, await sharp(Buffer.from(flameSvg)).png().toBuffer());
+    }
+
+    const flamePattern = join(dir, "flame-%03d.png");
 
     const makeArgs = crf => [
       "-hide_banner", "-loglevel", "error", "-y",
       "-loop", "1", "-framerate", "30", "-i", pngPath,
+      "-stream_loop", "-1", "-framerate", "12", "-i", flamePattern,
       "-i", playerPath,
       "-filter_complex",
-      "[1:v]scale=260:260:force_original_aspect_ratio=increase,crop=260:260,fps=30,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),126*126),255,0)'[avatar];[0:v][avatar]overlay=470:220:shortest=1:eof_action=endall,eq=brightness='0.004+0.006*sin(2*PI*t/2.8)':eval=frame,format=yuv420p[out]",
-      "-map", "[out]",
-      "-shortest",
-      "-c:v", "libx264",
-      "-preset", "ultrafast",
-      "-crf", String(crf),
-      "-pix_fmt", "yuv420p",
-      "-movflags", "+faststart",
-      "-an",
-      "-threads", "1",
-      mp4Path
+      "[2:v]scale=260:260:force_original_aspect_ratio=increase,crop=260:260,fps=30,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),126*126),255,0)'[avatar];[0:v][1:v]overlay=0:0:shortest=1[flamed];[flamed][avatar]overlay=470:220:shortest=1:eof_action=endall,fps=30,format=yuv420p[out]",
+      "-map", "[out]", "-shortest",
+      "-c:v", "libx264", "-preset", "ultrafast",
+      "-crf", String(crf), "-pix_fmt", "yuv420p",
+      "-movflags", "+faststart", "-an", "-threads", "1", mp4Path
     ];
 
     await runFFmpeg(ffmpegPath, makeArgs(30), {
-      timeout: 300000,
-      maxBuffer: 8 * 1024 * 1024
+      timeout: 300000, maxBuffer: 8 * 1024 * 1024
     });
 
     let info = await stat(mp4Path);
 
     if (info.size > 45 * 1024 * 1024) {
       await runFFmpeg(ffmpegPath, makeArgs(34), {
-        timeout: 300000,
-        maxBuffer: 8 * 1024 * 1024
+        timeout: 300000, maxBuffer: 8 * 1024 * 1024
       });
-
       info = await stat(mp4Path);
     }
 
     if (!info.size || info.size > 45 * 1024 * 1024) {
-      throw new Error(
-        "Generated profile video is empty or exceeds the safe 45 MB limit."
-      );
+      throw new Error("Generated profile video is empty or exceeds the safe 45 MB limit.");
     }
 
     return await readFile(mp4Path);
@@ -1013,7 +1088,7 @@ async function updatePersistentSkillProfile(bot, telegramId) {
       playerVideoBuffer = await getTrainingProfileVideoBuffer(bot, id);
     } catch (error) {
       console.error("TRAINING_PROFILE_VIDEO_DOWNLOAD_ERROR:", error?.description || error?.message || error);
-      await requestTrainingProfileVideo(bot, id, null, true);
+      await requestTrainingProfileVideo(bot, id);
       return;
     }
 
