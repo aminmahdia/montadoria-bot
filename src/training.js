@@ -1006,10 +1006,11 @@ async function buildSkillProfileVideo(svg, playerVideoBuffer) {
       "-hide_banner", "-loglevel", "error", "-y",
       "-loop", "1", "-framerate", "30", "-i", pngPath,
       "-stream_loop", "-1", "-framerate", "12", "-i", flamePattern,
-      "-i", playerPath,
+      "-threads", "1", "-i", playerPath,
+      "-filter_complex_threads", "1",
       "-filter_complex",
       "[2:v]scale=260:260:force_original_aspect_ratio=increase,crop=260:260,fps=30,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),126*126),255,0)'[avatar];[0:v][1:v]overlay=0:0:shortest=1[flamed];[flamed][avatar]overlay=470:220:shortest=1:eof_action=endall,fps=30,format=yuv420p[out]",
-      "-map", "[out]", "-shortest",
+      "-map", "[out]", "-t", "3", "-shortest",
       "-c:v", "libx264", "-preset", "ultrafast",
       "-crf", String(crf), "-pix_fmt", "yuv420p",
       "-movflags", "+faststart", "-an", "-threads", "1", mp4Path
@@ -1094,20 +1095,9 @@ async function updatePersistentSkillProfile(bot, telegramId) {
       );
       console.error("TRAINING_PROFILE_VIDEO_DOWNLOAD_ERROR:", downloadError);
 
-      // چون ویدئو قبلاً ذخیره شده، درخواست مجدد باید اجباری باشد.
-      try {
-        await requestTrainingProfileVideo(bot, id, null, true);
-      } catch (requestError) {
-        console.error(
-          "TRAINING_PROFILE_VIDEO_REREQUEST_ERROR:",
-          requestError?.description || requestError?.message || requestError
-        );
-        throw new Error(
-          `دانلود ویدئوی کارت شکست خورد: ${downloadError}`
-        );
-      }
-
-      return "video_reupload_requested";
+      throw new Error(
+        `دانلود ویدئوی ذخیره‌شده از تلگرام ناموفق بود: ${downloadError}`
+      );
     }
 
     if (!playerVideoBuffer?.length) {
@@ -1378,6 +1368,47 @@ function rejectReview(reviewId, reviewerId, reason) {
 
 export function registerTraining(bot) {
 
+  // READ-ONLY LIVE STATUS OF THE RUNNING DATABASE.
+  bot.hears(/^#وضعیت_کارت_مهارت$/i, async ctx => {
+    if (!ctx.from || ctx.chat?.type !== "private" || !isManager(ctx)) return;
+
+    const id = String(ctx.from.id);
+
+    const video = db.prepare(`
+      SELECT video_file_id FROM training_profile_videos
+      WHERE telegram_id=?
+    `).get(id);
+
+    const pending = db.prepare(`
+      SELECT telegram_id FROM training_profile_photo_requests
+      WHERE telegram_id=?
+    `).get(id);
+
+    const skills = db.prepare(`
+      SELECT COUNT(*) AS total FROM training_skills
+      WHERE telegram_id=?
+    `).get(id);
+
+    const post = db.prepare(`
+      SELECT chat_id, message_id FROM training_profile_posts
+      WHERE telegram_id=?
+    `).get(id);
+
+    const channel = getSetting("skill_channel_id");
+
+    return ctx.reply([
+      "🧾 وضعیت زنده کارت مهارت",
+      "نسخه بررسی: CARD_DIAG_20261110_A",
+      `ویدئو در دیتابیس: ${video?.video_file_id ? "ثبت شده" : "ثبت نشده"}`,
+      `درخواست ویدئو در انتظار: ${pending ? "بله" : "خیر"}`,
+      `تعداد مهارت‌های تأییدشده: ${Number(skills?.total || 0)}`,
+      `پست کارت در دیتابیس: ${post ? "ثبت شده" : "ثبت نشده"}`,
+      `کانال تنظیم‌شده: ${channel || "تنظیم نشده"}`,
+      `کانال پست قبلی: ${post?.chat_id || "ندارد"}`,
+      `شناسه پیام کارت: ${post?.message_id || "ندارد"}`
+    ].join("\n"));
+  });
+
   // ONLY ACCEPT THE REQUESTED PHOTO IN THE PLAYER'S PRIVATE CHAT.
   bot.on("message:video", async (ctx, next) => {
     if (!ctx.from || !ctx.chat || ctx.chat.type !== "private") return next();
@@ -1415,6 +1446,11 @@ export function registerTraining(bot) {
       WHERE telegram_id=?
     `).run(id);
 
+    db.prepare(`
+      DELETE FROM training_profile_video_request_once
+      WHERE telegram_id=?
+    `).run(id);
+
     await ctx.reply("✅ ویدیو دریافت شد. کارت مهارت در حال به‌روزرسانی است.");
 
     try {
@@ -1424,10 +1460,24 @@ export function registerTraining(bot) {
         await ctx.reply("✅ کارت مهارت در کانال به‌روزرسانی شد.");
       } else if (result === "waiting_for_approval") {
         await ctx.reply("✅ ویدئو ذخیره شد؛ پس از تأیید اولین تمرین، کارت مهارت منتشر می‌شود.");
+      } else if (result === "video_request_sent") {
+        await ctx.reply("⚠️ هنوز ویدئوی ذخیره‌شده برای کارت در دسترس نیست؛ درخواست ارسال ویدئو ثبت شد.");
+      } else {
+        await ctx.reply(`⚠️ به‌روزرسانی کارت با وضعیت غیرمنتظره متوقف شد: ${String(result)}`);
       }
     } catch (error) {
-      console.error("TRAINING_PROFILE_VIDEO_CREATE_ERROR:", error?.stack || error?.description || error?.message || error);
-      await ctx.reply("❌ ویدئو ذخیره شد، اما ساخت کارت شکست خورد. خطا در گزارش ربات ثبت شد.");
+      const detail = String(
+        error?.description || error?.message || error || "خطای نامشخص"
+      );
+      const token = String(process.env.TELEGRAM_BOT_TOKEN || "");
+      const safeDetail = token ? detail.split(token).join("[TOKEN]") : detail;
+
+      console.error("TRAINING_PROFILE_VIDEO_CREATE_ERROR:", error?.stack || detail);
+
+      await ctx.reply(
+        "❌ ویدئو ذخیره شد، اما کارت ساخته نشد.\n" +
+        `علت: ${safeDetail.slice(0, 220)}`
+      );
     }
   });
 
@@ -2202,6 +2252,13 @@ export function registerTraining(bot) {
         await bot.api.sendMessage(
           getSetting("skill_channel_id"),
           `⚠️ به‌روزرسانی کارت مهارت کاربر ${approved.telegram_id} ناموفق بود؛ گزارش تمرین تأیید شده است.`
+        );
+      } catch {}
+
+      try {
+        await bot.api.sendMessage(
+          approved.telegram_id,
+          "⚠️ تمرین تأیید و امتیاز ثبت شد، اما ساخت کارت مهارت ناموفق بود. برای بررسی وضعیت، دستور #وضعیت_کارت_مهارت را در خصوصی ربات بفرست."
         );
       } catch {}
     }
