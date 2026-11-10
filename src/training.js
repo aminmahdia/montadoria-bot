@@ -1,16 +1,6 @@
 import db from "./database.js";
-import { InputFile } from "grammy";
-import sharp from "sharp";
-import ffmpegPath from "ffmpeg-static";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { mkdtemp, writeFile, readFile, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
-const runFFmpeg = promisify(execFile);
 
-sharp.concurrency(1);
 
 // MONTADORIA TRAINING SYSTEM — REVIEW GROUP + PERMANENT SKILL PROFILE
 
@@ -19,7 +9,6 @@ const XP_PER_MINUTE = 2;
 const POINTS_PER_MINUTE = 1;
 const SKILL_MASTERY_POINTS = 100;
 const REJECT_REPLY_TIMEOUT = 10 * 60;
-const PROFILE_SKILLS_LIMIT = 4;
 
 // DATABASE
 
@@ -62,25 +51,8 @@ CREATE TABLE IF NOT EXISTS training_skills (
   PRIMARY KEY (telegram_id, skill)
 );
 
-CREATE TABLE IF NOT EXISTS training_profile_posts (
-  telegram_id TEXT PRIMARY KEY,
-  chat_id TEXT NOT NULL,
-  message_id INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
 
-CREATE TABLE IF NOT EXISTS training_profile_videos (
-  telegram_id TEXT PRIMARY KEY,
-  video_file_id TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-);
 
-CREATE TABLE IF NOT EXISTS training_profile_photo_requests (
-  telegram_id TEXT PRIMARY KEY,
-  chat_id TEXT NOT NULL,
-  prompt_message_id INTEGER NOT NULL DEFAULT 0,
-  requested_at INTEGER NOT NULL
-);
 
 CREATE TABLE IF NOT EXISTS training_reject_wait (
   manager_id TEXT PRIMARY KEY,
@@ -88,14 +60,6 @@ CREATE TABLE IF NOT EXISTS training_reject_wait (
   created_at INTEGER NOT NULL
 );
 `);
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS training_profile_video_request_once (
-  telegram_id TEXT PRIMARY KEY,
-  requested_at INTEGER NOT NULL
-);
-`);
-
 
 function ensureColumn(table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
@@ -228,15 +192,6 @@ function splitEnd(text) {
   }
 
   return { mode };
-}
-
-function escapeSvg(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
 }
 
 function calculateLevelFromXP(xp) {
@@ -385,23 +340,6 @@ async function editFinalReports(bot, review, text, fallbackMessage) {
     }
   }
 
-  // حذف پیام موقت قدیمی از کانال مهارت.
-  const channelId =
-    review.channel_id || getSetting("skill_channel_id");
-
-  if (channelId && review.channel_message_id) {
-    try {
-      await bot.api.deleteMessage(
-        channelId,
-        review.channel_message_id
-      );
-    } catch (error) {
-      console.error(
-        "TRAINING_SKILL_REQUEST_DELETE_ERROR:",
-        error?.description || error?.message || error
-      );
-    }
-  }
 }
 
 // XP + LEVEL
@@ -458,783 +396,6 @@ function weaponIcon(skill) {
   if (/مشت|بوکس|boxing|拳/.test(s)) return "🥊";
 
   return "⚔️";
-}
-
-function fireColor(percent) {
-  if (percent >= 100) return "url(#rainbowFire)";
-  if (percent >= 75) return "#bd68ff";
-  if (percent >= 50) return "#46c9ff";
-  if (percent >= 25) return "#ffd34e";
-
-  return "#ff713b";
-}
-
-// SVG SKILL CARD
-
-function profileSvg(user, skills, xp, level, photoBuffer) {
-  const width = 1200;
-  const height = 720;
-
-  const displayName = decoratedUserName(
-    user.telegram_id,
-    user.display_name || "MONTADORIA PLAYER"
-  );
-
-  const rows = Array.isArray(skills)
-    ? skills.slice(0, PROFILE_SKILLS_LIMIT)
-    : [];
-
-  const photo = photoBuffer
-    ? `<image href="data:image/jpeg;base64,${photoBuffer.toString("base64")}" x="470" y="220" width="260" height="260" preserveAspectRatio="xMidYMid slice" clip-path="url(#avatarClip)"/>`
-    : `<circle cx="600" cy="350" r="126" fill="#170d20"/>
-       <text x="600" y="370" text-anchor="middle" font-size="76" fill="#d8b36a">${escapeSvg((user.display_name || "M").trim().slice(0, 1).toUpperCase())}</text>`;
-
-  const placements = [
-    { x: 280, y: 265, side: "left" },
-    { x: 920, y: 265, side: "right" },
-    { x: 280, y: 465, side: "left" },
-    { x: 920, y: 465, side: "right" }
-  ];
-
-  const glowFilters = rows.map((skill, index) => {
-    const percent = Math.min(
-      100,
-      Math.max(0, Math.round(
-        Number(skill.points || 0) / SKILL_MASTERY_POINTS * 100
-      ))
-    );
-
-    const glowColor =
-      percent >= 100 ? "#ff8ed8" :
-      percent >= 75 ? "#c27aff" :
-      percent >= 50 ? "#58cfff" :
-      percent >= 25 ? "#ffd16d" : "#ff7547";
-
-    const blur = (2.5 + percent * 0.12).toFixed(1);
-    const opacity = (0.20 + percent * 0.007).toFixed(2);
-
-    return `<filter id="weaponGlow${index}" x="-100%" y="-100%" width="300%" height="300%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="${blur}" result="blur"/>
-      <feFlood flood-color="${glowColor}" flood-opacity="${opacity}" result="flood"/>
-      <feComposite in="flood" in2="blur" operator="in" result="glow"/>
-      <feMerge><feMergeNode in="glow"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>`;
-  }).join("");
-
-  const skillMarkup = rows.length
-    ? rows.map((skill, index) => {
-        const pos = placements[index];
-
-        const percent = Math.min(
-          100,
-          Math.max(0, Math.round(
-            Number(skill.points || 0) / SKILL_MASTERY_POINTS * 100
-          ))
-        );
-
-        const color = fireColor(percent);
-
-        const glowColor =
-          percent >= 100 ? "#ff8ed8" :
-          percent >= 75 ? "#c27aff" :
-          percent >= 50 ? "#58cfff" :
-          percent >= 25 ? "#ffd16d" : "#ff7547";
-
-        const blur = (2.5 + percent * 0.12).toFixed(1);
-        const flameOpacity = (0.12 + percent * 0.0065).toFixed(2);
-        const weaponScale = "1.35";
-        const strokeWidth = (3 + percent * 0.035).toFixed(1);
-
-
-        const skillName = String(skill.skill || "مهارت").toLowerCase();
-        let weapon;
-
-        if (/شمشیر|sword/.test(skillName)) {
-          weapon = `
-            <path d="M0,-72 L13,-13 L9,7 L-9,7 L-13,-13 Z"
-                  fill="${color}" stroke="#fff0c7"
-                  stroke-width="${strokeWidth}" stroke-linejoin="round"/>
-            <path d="M0,-65 V2" stroke="#fff8df"
-                  stroke-width="2.2" opacity=".9"/>
-            <path d="M-32,5 Q0,17 32,5"
-                  fill="none" stroke="#f0cf8b"
-                  stroke-width="${Number(strokeWidth) + 2}"
-                  stroke-linecap="round"/>
-            <path d="M0,13 V57"
-                  stroke="#b77b43" stroke-width="13"
-                  stroke-linecap="round"/>
-            <path d="M-6,23 L6,30 M-6,35 L6,42 M-6,47 L6,54"
-                  stroke="#f1d5a0" stroke-width="2.5"/>
-            <path d="M-13,59 Q0,76 13,59 L9,54 H-9 Z"
-                  fill="#d9b36c" stroke="#fff0c7" stroke-width="2"/>
-          `;
-        } else if (/خنجر|چاقو|dagger|knife/.test(skillName)) {
-          weapon = `
-            <path d="M0,-39 L10,5 L0,15 L-10,5 Z"
-                  fill="${color}" stroke="#fff0c7" stroke-width="2"/>
-            <path d="M-17,15 H17 M0,15 V36 M-8,36 H8"
-                  fill="none" stroke="#d9b36c"
-                  stroke-width="${strokeWidth}" stroke-linecap="round"/>
-          `;
-        } else if (/تفنگ|اسلحه|تیراندازی|gun|rifle|shoot/.test(skillName)) {
-          weapon = `
-            <path d="M-43,-10 H34 L47,-3 H16 L11,8 H-4 L-11,0 H-43 Z"
-                  fill="${color}" stroke="#ffe6ba" stroke-width="2"
-                  stroke-linejoin="round"/>
-            <path d="M-7,7 L-2,29 L11,29 L14,7 M-29,-10 V-19 H-8 V-10"
-                  fill="none" stroke="#d9b36c"
-                  stroke-width="${strokeWidth}" stroke-linejoin="round"/>
-          `;
-        } else if (/کمان|archery|bow/.test(skillName)) {
-          weapon = `
-            <path d="M-13,-43 C39,-26 39,26 -13,43"
-                  fill="none" stroke="${color}"
-                  stroke-width="${Number(strokeWidth) + 1}"
-                  stroke-linecap="round"/>
-            <path d="M-13,-43 L-13,43 M-13,0 H43 M30,-8 L43,0 L30,8"
-                  fill="none" stroke="#ffe6ba" stroke-width="2"
-                  stroke-linecap="round" stroke-linejoin="round"/>
-          `;
-        } else if (/تبر|axe/.test(skillName)) {
-          weapon = `
-            <path d="M-3,-42 L3,42" stroke="#d9b36c"
-                  stroke-width="${Number(strokeWidth) + 2}" stroke-linecap="round"/>
-            <path d="M0,-38 C28,-49 47,-29 39,-8 C29,2 14,1 2,-3 Z"
-                  fill="${color}" stroke="#ffe6ba" stroke-width="2"/>
-          `;
-        } else if (/نیزه|spear/.test(skillName)) {
-          weapon = `
-            <path d="M0,-46 L0,43" stroke="#d9b36c"
-                  stroke-width="${Number(strokeWidth) + 2}" stroke-linecap="round"/>
-            <path d="M0,-49 L13,-18 L0,-24 L-13,-18 Z"
-                  fill="${color}" stroke="#ffe6ba" stroke-width="2"/>
-          `;
-        } else if (/مشت|بوکس|boxing|拳/.test(skillName)) {
-          weapon = `
-            <path d="M-34,-8 C-38,-23 -22,-30 -12,-20 L-6,-12 L-4,-28
-                     C-2,-40 13,-39 15,-26 L17,-13 L22,-27
-                     C27,-38 41,-31 37,-18 L31,15
-                     C27,30 14,37 -3,34 L-22,27
-                     C-33,22 -38,5 -34,-8 Z"
-                  fill="${color}" stroke="#ffe6ba" stroke-width="2"/>
-            <path d="M-24,13 L24,13" stroke="#8d2132" stroke-width="5"/>
-          `;
-        } else {
-          weapon = `
-            <path d="M0,-45 L10,-7 L5,7 L-5,7 L-10,-7 Z"
-                  fill="${color}" stroke="#fff0c7" stroke-width="2"/>
-            <path d="M-21,8 H21 M0,7 V36 M-9,36 H9"
-                  fill="none" stroke="#d9b36c"
-                  stroke-width="${strokeWidth}" stroke-linecap="round"/>
-          `;
-        }
-
-        return `
-          <g>
-            <g data-flame-x="${pos.x}" data-flame-y="${pos.y}" data-flame-level="${percent}" transform="translate(${pos.x} ${pos.y})">
-              <ellipse cx="0" cy="0"
-                       rx="${46 + percent * 0.10}"
-                       ry="${38 + percent * 0.08}"
-                       fill="url(#fireAura)" opacity="${flameOpacity}"/>
-
-              <g transform="scale(${weaponScale})"
-                 filter="url(#weaponGlow${index})">
-                ${weapon}
-              </g>
-            </g>
-
-          </g>`;
-      }).join("")
-    : `<text x="600" y="545" text-anchor="middle"
-             font-size="22" fill="#d9c8a7">هنوز مهارتی ثبت نشده است.</text>`;
-
-  return `
-  <svg xmlns="http://www.w3.org/2000/svg"
-       width="${width}" height="${height}"
-       viewBox="0 0 ${width} ${height}"
-       font-family="DejaVu Sans,Arial,sans-serif">
-
-    <defs>
-      <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#030305"/>
-        <stop offset=".38" stop-color="#100817"/>
-        <stop offset=".72" stop-color="#260b20"/>
-        <stop offset="1" stop-color="#050407"/>
-      </linearGradient>
-
-      <linearGradient id="gold" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0" stop-color="#765324"/>
-        <stop offset=".5" stop-color="#f4d58b"/>
-        <stop offset="1" stop-color="#765324"/>
-      </linearGradient>
-
-      <linearGradient id="rainbowFire" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#ff315d"/>
-        <stop offset=".2" stop-color="#ff9b32"/>
-        <stop offset=".4" stop-color="#ffe34e"/>
-        <stop offset=".6" stop-color="#45e08b"/>
-        <stop offset=".8" stop-color="#42b9ff"/>
-        <stop offset="1" stop-color="#c15cff"/>
-      </linearGradient>
-
-      <radialGradient id="fireAura">
-        <stop offset="0" stop-color="#fff0c4" stop-opacity=".85"/>
-        <stop offset=".35" stop-color="#ff8d44" stop-opacity=".55"/>
-        <stop offset="1" stop-color="#a51d50" stop-opacity="0"/>
-      </radialGradient>
-
-      <clipPath id="avatarClip">
-        <circle cx="600" cy="350" r="126"/>
-      </clipPath>
-
-      <pattern id="grain" width="48" height="48"
-               patternUnits="userSpaceOnUse">
-        <path d="M0 24H48 M24 0V48"
-              stroke="#ffffff" stroke-opacity=".025" stroke-width="1"/>
-      </pattern>
-
-      ${glowFilters}
-    </defs>
-
-    <rect width="1200" height="720" fill="url(#bg)"/>
-    <rect width="1200" height="720" fill="url(#grain)"/>
-
-    <rect x="18" y="18" width="1164" height="684" rx="24"
-          fill="none" stroke="url(#gold)" stroke-width="3"/>
-
-    <rect x="29" y="29" width="1142" height="662" rx="18"
-          fill="none" stroke="#743e69" stroke-width="1" opacity=".65"/>
-
-    <path d="M60 145 H1140" stroke="url(#gold)"
-          stroke-width="1.5" opacity=".65"/>
-
-    <path d="M60 650 H1140" stroke="#8c633c"
-          stroke-width="1" opacity=".55"/>
-
-    <g transform="translate(112 91)" fill="none"
-       stroke="#c49c58" stroke-width="3" stroke-linejoin="round">
-      <path d="M-35,-29 L-17,-13 L0,-24 L17,-13 L35,-29
-               L29,5 L17,27 L0,39 L-17,27 L-29,5 Z"/>
-      <path d="M-19,1 L-5,7 L-18,13 M19,1 L5,7 L18,13
-               M-8,24 L0,29 L8,24"/>
-      <path d="M-35,-29 L-30,-5 M35,-29 L30,-5"/>
-    </g>
-
-    <g transform="translate(1088 91)" fill="none"
-       stroke="#d9b36c" stroke-width="3" stroke-linejoin="round">
-      <path d="M0,-39 C-19,-25 -19,-7 0,5
-               C19,-7 19,-25 0,-39 Z"/>
-      <path d="M0,5 C-22,-1 -31,12 -22,27
-               C-10,30 -3,22 0,5 Z"/>
-      <path d="M0,5 C22,-1 31,12 22,27
-               C10,30 3,22 0,5 Z"/>
-      <path d="M0,5 V40 M-15,40 H15"/>
-    </g>
-
-    <text x="600" y="78" text-anchor="middle" font-size="36"
-          font-weight="bold" letter-spacing="8"
-          fill="url(#gold)">MONTADORIA</text>
-
-    <text x="600" y="113" text-anchor="middle" font-size="15"
-          letter-spacing="5" fill="#bba4c4">
-      WOLF · FLEUR-DE-LIS · MASTERY
-    </text>
-
-    <text x="600" y="183" text-anchor="middle" font-size="19"
-          letter-spacing="4" fill="#d6b873">
-      PLAYER SKILL ARCHIVE
-    </text>
-
-    <circle cx="600" cy="350" r="139" fill="#100817"
-            stroke="#795333" stroke-width="2"/>
-
-    <circle cx="600" cy="350" r="133" fill="none"
-            stroke="url(#gold)" stroke-width="5"/>
-
-    ${photo}
-
-    <circle cx="600" cy="350" r="129" fill="none"
-            stroke="#a45d91" stroke-width="2" opacity=".75"/>
-
-    ${skillMarkup}
-
-    <text x="600" y="535" text-anchor="middle"
-          font-size="25" fill="#f1dcae">
-      ${escapeSvg(String(displayName).slice(0, 32))}
-    </text>
-
-    <text x="600" y="574" text-anchor="middle"
-          font-size="18" fill="#d6b873">
-      XP ${Number(xp || 0)}  ·  LEVEL ${Number(level || 1)}
-    </text>
-
-    <text x="600" y="610" text-anchor="middle"
-          font-size="15" fill="#a995b2">
-      TELEGRAM ID · ${escapeSvg(user.telegram_id)}
-    </text>
-
-    <text x="600" y="675" text-anchor="middle"
-          font-size="13" letter-spacing="4" fill="#80658e">
-      THE FIRST CIRCLE · MONTADORIA
-    </text>
-  </svg>`;
-}
-
-const profileGenerationQueues = new Map();
-
-
-// DOWNLOAD PLAYER PROFILE VIDEO
-async function getTrainingProfileVideoBuffer(bot, telegramId) {
-  const saved = db.prepare(`
-    SELECT video_file_id FROM training_profile_videos
-    WHERE telegram_id=?
-  `).get(String(telegramId));
-
-  if (!saved?.video_file_id) return null;
-
-  const file = await bot.api.getFile(saved.video_file_id);
-  if (!file?.file_path) throw new Error("Video file path unavailable.");
-
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not configured.");
-
-  const response = await fetch(
-    `https://api.telegram.org/file/bot${token}/${file.file_path}`
-  );
-
-  if (!response.ok) throw new Error(`Video download failed: ${response.status}`);
-
-  const data = Buffer.from(await response.arrayBuffer());
-
-  if (!data.length || data.length > 20 * 1024 * 1024) {
-    throw new Error("Profile video exceeds 20 MB.");
-  }
-
-  return data;
-}
-
-// REQUEST PLAYER PROFILE VIDEO
-async function requestTrainingProfileVideo(
-  bot,
-  telegramId,
-  fallbackChatId = null,
-  force = false
-) {
-  const id = String(telegramId);
-
-  const saved = db.prepare(`
-    SELECT video_file_id FROM training_profile_videos
-    WHERE telegram_id=?
-  `).get(id);
-
-  if (saved?.video_file_id && !force) return false;
-
-  const pending = db.prepare(`
-    SELECT telegram_id FROM training_profile_photo_requests
-    WHERE telegram_id=?
-  `).get(id);
-
-  if (pending && !force) return true;
-
-  if (!force) {
-    const requestedBefore = db.prepare(`
-      SELECT telegram_id FROM training_profile_video_request_once
-      WHERE telegram_id=?
-    `).get(id);
-
-    if (requestedBefore) return false;
-
-    db.prepare(`
-      INSERT OR IGNORE INTO training_profile_video_request_once(
-        telegram_id, requested_at
-      ) VALUES(?,?)
-    `).run(id, Math.floor(Date.now() / 1000));
-  } else {
-    db.prepare(`
-      INSERT INTO training_profile_video_request_once(telegram_id, requested_at)
-      VALUES(?,?)
-      ON CONFLICT(telegram_id) DO UPDATE SET
-        requested_at=excluded.requested_at
-    `).run(id, Math.floor(Date.now() / 1000));
-  }
-
-  if (force) {
-    db.prepare(`
-      DELETE FROM training_profile_photo_requests
-      WHERE telegram_id=?
-    `).run(id);
-  }
-
-  const prompt =
-    "🎬 برای کارت مهارت مونتادوریا، یک ویدیوی کوتاه دلخواه ارسال کن.\n\n" +
-    "ویدیو باید به‌صورت Video ارسال شود، نه فایل.\n" +
-    "حداکثر حجم: ۲۰ مگابایت.\n" +
-    "ویدیوی تو در قاب کارت مهارت نمایش داده می‌شود.";
-
-  let sent = null;
-  let privateError = null;
-
-  try {
-    sent = await bot.api.sendMessage(id, prompt);
-  } catch (error) {
-    privateError = error;
-  }
-
-  const promptMessageId = Number(sent?.message_id || 0);
-
-  if (!sent) {
-    const latestReview = db.prepare(`
-      SELECT source_chat_id FROM training_reviews
-      WHERE telegram_id=? AND source_chat_id IS NOT NULL
-      ORDER BY id DESC LIMIT 1
-    `).get(id);
-
-    const fallback = String(
-      fallbackChatId || latestReview?.source_chat_id || ""
-    );
-
-    if (!fallback || fallback === id) {
-      throw privateError || new Error("Unable to open private video request.");
-    }
-
-    try {
-      await bot.api.sendMessage(
-        fallback,
-        `🎬 بازیکن ${id}: وارد خصوصی ربات شو، /start را بزن و ویدیوی کوتاهت را ارسال کن.`
-      );
-    } catch (error) {
-      db.prepare(`
-        DELETE FROM training_profile_video_request_once
-        WHERE telegram_id=?
-      `).run(id);
-      throw error;
-    }
-  }
-
-  db.prepare(`
-    INSERT INTO training_profile_photo_requests(
-      telegram_id,chat_id,prompt_message_id,requested_at
-    )
-    VALUES(?,?,?,?)
-    ON CONFLICT(telegram_id) DO UPDATE SET
-      chat_id=excluded.chat_id,
-      prompt_message_id=excluded.prompt_message_id,
-      requested_at=excluded.requested_at
-  `).run(id, id, promptMessageId, Math.floor(Date.now() / 1000));
-
-  return true;
-}
-// RENDER A SHORT, STREAMABLE MP4 VIDEO
-async function buildSkillProfileVideo(svg, playerVideoBuffer) {
-  if (!ffmpegPath) throw new Error("FFmpeg binary was not installed on the host.");
-  if (!playerVideoBuffer?.length) throw new Error("Player profile video is missing.");
-
-  const dir = await mkdtemp(join(tmpdir(), "montadoria-skill-profile-"));
-  const pngPath = join(dir, "profile.png");
-  const playerPath = join(dir, "player.mp4");
-  const mp4Path = join(dir, "profile.mp4");
-
-  try {
-    await writeFile(pngPath, await sharp(Buffer.from(svg)).png().toBuffer());
-    await writeFile(playerPath, playerVideoBuffer);
-
-    const flames = Array.from(
-      svg.matchAll(/data-flame-x="(\d+)" data-flame-y="(\d+)" data-flame-level="(\d+)"/g),
-      m => ({
-        x: Number(m[1]),
-        y: Number(m[2]),
-        level: Math.max(0, Math.min(100, Number(m[3]))) / 100
-      })
-    );
-
-    const frameCount = 24;
-
-    for (let frame = 0; frame < frameCount; frame++) {
-      const markup = flames.map((item, index) => {
-        const intensity = 0.30 + item.level * 0.68;
-
-        const tongues = Array.from({ length: 5 }, (_, j) => {
-          const phase = frame * 0.72 + index * 1.91 + j * 1.37;
-          const flicker = 0.76 + 0.24 * Math.sin(phase);
-          const height = (42 + item.level * 65) * flicker;
-          const width = 7 + item.level * 8;
-          const x = [-30, -15, 0, 15, 30][j];
-          const drift = Math.sin(phase * 1.4) * (4 + item.level * 6);
-          const base = 48;
-          const tip = base - height;
-
-          return `
-            <path d="M${x-6},${base}
-              C${x-width+drift},${base-18}
-               ${x-width},${tip+height*.42}
-               ${x+drift},${tip}
-              C${x+width},${tip+height*.38}
-               ${x+width},${base-15}
-               ${x+6},${base} Z"
-              fill="#ff5728" opacity="${intensity}" filter="url(#fireGlow)"/>
-            <path d="M${x-3},${base-2}
-              C${x-5},${base-24}
-               ${x+drift*.5},${tip+height*.35}
-               ${x+drift*.4},${tip+9}
-              C${x+8},${tip+height*.55}
-               ${x+5},${base-16}
-               ${x+3},${base-2} Z"
-              fill="#ffd36d" opacity="${intensity*.78}"/>
-          `;
-        }).join("");
-
-        return `<g transform="translate(${item.x} ${item.y})">${tongues}</g>`;
-      }).join("");
-
-      const flameSvg = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720">
-          <defs>
-            <filter id="fireGlow" x="-100%" y="-100%" width="300%" height="300%">
-              <feGaussianBlur stdDeviation="4"/>
-            </filter>
-          </defs>
-          ${markup}
-        </svg>`;
-
-      const framePath = join(dir, `flame-${String(frame).padStart(3, "0")}.png`);
-      await writeFile(framePath, await sharp(Buffer.from(flameSvg)).png().toBuffer());
-    }
-
-    const flamePattern = join(dir, "flame-%03d.png");
-
-    const makeArgs = crf => [
-      "-hide_banner", "-loglevel", "error", "-y",
-      "-loop", "1", "-framerate", "30", "-i", pngPath,
-      "-stream_loop", "-1", "-framerate", "12", "-i", flamePattern,
-      "-threads", "1", "-i", playerPath,
-      "-filter_complex_threads", "1",
-      "-filter_complex",
-      "[2:v]scale=260:260:force_original_aspect_ratio=increase,crop=260:260,fps=30,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),126*126),255,0)'[avatar];[0:v][1:v]overlay=0:0:shortest=1[flamed];[flamed][avatar]overlay=470:220:shortest=1:eof_action=endall,fps=30,format=yuv420p[out]",
-      "-map", "[out]", "-t", "3", "-shortest",
-      "-c:v", "libx264", "-preset", "ultrafast",
-      "-crf", String(crf), "-pix_fmt", "yuv420p",
-      "-movflags", "+faststart", "-an", "-threads", "1", mp4Path
-    ];
-
-    await runFFmpeg(ffmpegPath, makeArgs(30), {
-      timeout: 300000, maxBuffer: 8 * 1024 * 1024
-    });
-
-    let info = await stat(mp4Path);
-
-    if (info.size > 45 * 1024 * 1024) {
-      await runFFmpeg(ffmpegPath, makeArgs(34), {
-        timeout: 300000, maxBuffer: 8 * 1024 * 1024
-      });
-      info = await stat(mp4Path);
-    }
-
-    if (!info.size || info.size > 45 * 1024 * 1024) {
-      throw new Error("Generated profile video is empty or exceeds the safe 45 MB limit.");
-    }
-
-    return await readFile(mp4Path);
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
-// UPDATE THE EXISTING PROFILE POST, WITHOUT DUPLICATING IT
-
-async function updatePersistentSkillProfile(bot, telegramId) {
-  const id = String(telegramId);
-  const previous = profileGenerationQueues.get(id) || Promise.resolve();
-
-  const task = previous.catch(() => {}).then(async () => {
-    const chatId = getSetting("skill_channel_id");
-
-    if (!chatId) {
-      throw new Error("کانال مهارت تنظیم نشده است؛ دستور /skillchannel را بررسی کن.");
-    }
-
-    const user = userRecord(id) || {
-      telegram_id: id,
-      display_name: userNameById(id),
-      xp: 0,
-      level: 1
-    };
-
-    const skills = db.prepare(`
-      SELECT skill, points, sessions
-      FROM training_skills
-      WHERE telegram_id=?
-      ORDER BY points DESC, skill ASC
-    `).all(id);
-
-    const oldPost = db.prepare(`
-      SELECT chat_id, message_id
-      FROM training_profile_posts
-      WHERE telegram_id=?
-    `).get(id);
-
-    if (!skills.length && !oldPost) return "waiting_for_approval";
-
-    const videoRow = db.prepare(`
-      SELECT video_file_id
-      FROM training_profile_videos
-      WHERE telegram_id=?
-    `).get(id);
-
-    if (!videoRow?.video_file_id) {
-      if (skills.length) await requestTrainingProfileVideo(bot, id);
-      return "video_request_sent";
-    }
-
-    let playerVideoBuffer;
-
-    try {
-      playerVideoBuffer = await getTrainingProfileVideoBuffer(bot, id);
-    } catch (error) {
-      const downloadError = String(
-        error?.description || error?.message || error
-      );
-      console.error("TRAINING_PROFILE_VIDEO_DOWNLOAD_ERROR:", downloadError);
-
-      throw new Error(
-        `دانلود ویدئوی ذخیره‌شده از تلگرام ناموفق بود: ${downloadError}`
-      );
-    }
-
-    if (!playerVideoBuffer?.length) {
-      throw new Error("ویدئوی کارت خالی دانلود شد؛ ویدئو را دوباره ارسال کن.");
-    }
-
-    const svg = profileSvg(
-      user,
-      skills,
-      user.xp,
-      user.level,
-      null
-    );
-
-    const videoBuffer = await buildSkillProfileVideo(
-      svg,
-      playerVideoBuffer
-    );
-
-    const captionRows = skills.slice(0, 8).map(item => {
-      const percent = Math.min(
-        100,
-        Math.max(
-          0,
-          Math.round(
-            Number(item.points || 0) /
-            SKILL_MASTERY_POINTS * 100
-          )
-        )
-      );
-
-      return `${weaponIcon(item.skill)} ${item.skill}: ${percent}% (${item.points} امتیاز)`;
-    });
-
-    const caption = [
-      "⟡ پرونده ویدیویی دائمی مهارت مونتادوریا ⟡",
-      `👤 ${decoratedUserName(id, user.display_name || "بازیکن")}`,
-      `🆔 شناسه تلگرام: ${id}`,
-      `✨ XP: ${Number(user.xp || 0)} | 🎖 Level: ${Number(user.level || 1)}`,
-      ...captionRows,
-      "",
-      "🔥 در ۱۰۰ امتیاز، نماد هر مهارت به درخشش رنگی کامل می‌رسد."
-    ].join("\n").slice(0, 1000);
-
-    if (oldPost && String(oldPost.chat_id) === String(chatId)) {
-      try {
-        await bot.api.editMessageMedia(
-          oldPost.chat_id,
-          oldPost.message_id,
-          {
-            type: "video",
-            media: new InputFile(
-              videoBuffer,
-              "montadoria-skill-profile.mp4"
-            ),
-            caption
-          }
-        );
-
-        db.prepare(`
-          UPDATE training_profile_posts
-          SET updated_at=?
-          WHERE telegram_id=?
-        `).run(
-          Math.floor(Date.now() / 1000),
-          id
-        );
-
-        return "updated";
-
-      } catch (error) {
-        const message = String(
-          error?.description || error?.message || error
-        );
-
-        if (/message is not modified/i.test(message)) {
-          console.warn(
-            "TRAINING_PROFILE_VIDEO_EDIT_UNCHANGED: publishing a replacement post."
-          );
-        } else {
-          console.error("TRAINING_PROFILE_VIDEO_EDIT_ERROR:", message);
-        }
-      }
-    }
-
-    const sent = await bot.api.sendVideo(
-      chatId,
-      new InputFile(
-        videoBuffer,
-        "montadoria-skill-profile.mp4"
-      ),
-      {
-        caption,
-        duration: 3,
-        width: 1200,
-        height: 720,
-        supports_streaming: true
-      }
-    );
-
-    db.prepare(`
-      INSERT INTO training_profile_posts(
-        telegram_id,chat_id,message_id,updated_at
-      )
-      VALUES(?,?,?,?)
-      ON CONFLICT(telegram_id) DO UPDATE SET
-        chat_id=excluded.chat_id,
-        message_id=excluded.message_id,
-        updated_at=excluded.updated_at
-    `).run(
-      id,
-      String(chatId),
-      sent.message_id,
-      Math.floor(Date.now() / 1000)
-    );
-
-    if (oldPost) {
-      try {
-        await bot.api.deleteMessage(
-          oldPost.chat_id,
-          oldPost.message_id
-        );
-      } catch {}
-    }
-
-    return "published";
-  });
-
-  profileGenerationQueues.set(id, task);
-
-  try {
-    return await task;
-  } finally {
-    if (profileGenerationQueues.get(id) === task) {
-      profileGenerationQueues.delete(id);
-    }
-  }
 }
 
 // NOTIFY PLAYER
@@ -1368,137 +529,6 @@ function rejectReview(reviewId, reviewerId, reason) {
 
 export function registerTraining(bot) {
 
-  // READ-ONLY LIVE STATUS OF THE RUNNING DATABASE.
-  bot.hears(/^#وضعیت_کارت_مهارت$/i, async ctx => {
-    if (!ctx.from || ctx.chat?.type !== "private" || !isManager(ctx)) return;
-
-    const id = String(ctx.from.id);
-
-    const video = db.prepare(`
-      SELECT video_file_id FROM training_profile_videos
-      WHERE telegram_id=?
-    `).get(id);
-
-    const pending = db.prepare(`
-      SELECT telegram_id FROM training_profile_photo_requests
-      WHERE telegram_id=?
-    `).get(id);
-
-    const skills = db.prepare(`
-      SELECT COUNT(*) AS total FROM training_skills
-      WHERE telegram_id=?
-    `).get(id);
-
-    const post = db.prepare(`
-      SELECT chat_id, message_id FROM training_profile_posts
-      WHERE telegram_id=?
-    `).get(id);
-
-    const channel = getSetting("skill_channel_id");
-
-    return ctx.reply([
-      "🧾 وضعیت زنده کارت مهارت",
-      "نسخه بررسی: CARD_DIAG_20261110_A",
-      `ویدئو در دیتابیس: ${video?.video_file_id ? "ثبت شده" : "ثبت نشده"}`,
-      `درخواست ویدئو در انتظار: ${pending ? "بله" : "خیر"}`,
-      `تعداد مهارت‌های تأییدشده: ${Number(skills?.total || 0)}`,
-      `پست کارت در دیتابیس: ${post ? "ثبت شده" : "ثبت نشده"}`,
-      `کانال تنظیم‌شده: ${channel || "تنظیم نشده"}`,
-      `کانال پست قبلی: ${post?.chat_id || "ندارد"}`,
-      `شناسه پیام کارت: ${post?.message_id || "ندارد"}`
-    ].join("\n"));
-  });
-
-  // ONLY ACCEPT THE REQUESTED PHOTO IN THE PLAYER'S PRIVATE CHAT.
-  bot.on("message:video", async (ctx, next) => {
-    if (!ctx.from || !ctx.chat || ctx.chat.type !== "private") return next();
-
-    const id = String(ctx.from.id);
-
-    const pending = db.prepare(`
-      SELECT chat_id FROM training_profile_photo_requests
-      WHERE telegram_id=?
-    `).get(id);
-
-    if (!pending || String(ctx.chat.id) !== id || String(pending.chat_id) !== id) {
-      return next();
-    }
-
-    const video = ctx.message.video;
-    if (!video?.file_id) return next();
-
-    if (Number(video.file_size || 0) > 20 * 1024 * 1024) {
-      return ctx.reply("❌ حجم ویدیو بیشتر از ۲۰ مگابایت است.");
-    }
-
-    db.prepare(`
-      INSERT INTO training_profile_videos(
-        telegram_id,video_file_id,updated_at
-      )
-      VALUES(?,?,?)
-      ON CONFLICT(telegram_id) DO UPDATE SET
-        video_file_id=excluded.video_file_id,
-        updated_at=excluded.updated_at
-    `).run(id, video.file_id, Math.floor(Date.now() / 1000));
-
-    db.prepare(`
-      DELETE FROM training_profile_photo_requests
-      WHERE telegram_id=?
-    `).run(id);
-
-    db.prepare(`
-      DELETE FROM training_profile_video_request_once
-      WHERE telegram_id=?
-    `).run(id);
-
-    await ctx.reply("✅ ویدیو دریافت شد. کارت مهارت در حال به‌روزرسانی است.");
-
-    try {
-      const result = await updatePersistentSkillProfile(bot, id);
-
-      if (result === "updated" || result === "published") {
-        await ctx.reply("✅ کارت مهارت در کانال به‌روزرسانی شد.");
-      } else if (result === "waiting_for_approval") {
-        await ctx.reply("✅ ویدئو ذخیره شد؛ پس از تأیید اولین تمرین، کارت مهارت منتشر می‌شود.");
-      } else if (result === "video_request_sent") {
-        await ctx.reply("⚠️ هنوز ویدئوی ذخیره‌شده برای کارت در دسترس نیست؛ درخواست ارسال ویدئو ثبت شد.");
-      } else {
-        await ctx.reply(`⚠️ به‌روزرسانی کارت با وضعیت غیرمنتظره متوقف شد: ${String(result)}`);
-      }
-    } catch (error) {
-      const detail = String(
-        error?.description || error?.message || error || "خطای نامشخص"
-      );
-      const token = String(process.env.TELEGRAM_BOT_TOKEN || "");
-      const safeDetail = token ? detail.split(token).join("[TOKEN]") : detail;
-
-      console.error("TRAINING_PROFILE_VIDEO_CREATE_ERROR:", error?.stack || detail);
-
-      await ctx.reply(
-        "❌ ویدئو ذخیره شد، اما کارت ساخته نشد.\n" +
-        `علت: ${safeDetail.slice(0, 220)}`
-      );
-    }
-  });
-
-  bot.hears(/^#تغییر_ویدئو_کارت$/i, async ctx => {
-    if (!ctx.from || !ctx.chat) return;
-
-    try {
-      await requestTrainingProfileVideo(
-        bot,
-        String(ctx.from.id),
-        String(ctx.chat.id),
-        true
-      );
-
-      return ctx.reply("🎬 ویدیوی جدید کارت مهارت را در خصوصی ربات ارسال کن.");
-    } catch (error) {
-      console.error("TRAINING_PROFILE_VIDEO_REPLACE_ERROR:", error?.description || error?.message || error);
-      return ctx.reply("❌ ابتدا در خصوصی ربات /start را بزن.");
-    }
-  });
-
   // DELETE PLAYER SKILLS COMMANDS
 
   bot.hears(
@@ -1524,12 +554,6 @@ export function registerTraining(bot) {
         );
       }
 
-      try {
-        await updatePersistentSkillProfile(bot, targetId);
-      } catch (err) {
-        console.error("Skill profile update failed:", err);
-      }
-
       return ctx.reply(
         `✅ مهارت ${skill} از بازیکن ${targetId} حذف شد.\n` +
         "XP و تاریخچه تمرین‌های تأییدشده تغییری نکردند."
@@ -1553,12 +577,6 @@ export function registerTraining(bot) {
         return ctx.reply(
           "❌ این بازیکن مهارتی برای حذف ندارد."
         );
-      }
-
-      try {
-        await updatePersistentSkillProfile(bot, targetId);
-      } catch (err) {
-        console.error("Skill profile update failed:", err);
       }
 
       return ctx.reply(
@@ -1899,18 +917,11 @@ export function registerTraining(bot) {
       );
     }
 
-    const skillChannel = getSetting("skill_channel_id");
     const reviewGroup = getSetting("training_review_group_id");
 
-    if (!skillChannel || !reviewGroup) {
+    if (!reviewGroup) {
       return ctx.reply(
-        "⚙️ تنظیم کانال‌ها کامل نیست.\n" +
-        (!skillChannel
-          ? "کانال مهارت: /skillchannel شناسه_کانال\n"
-          : "") +
-        (!reviewGroup
-          ? "گروه اطلاعات: دستور /trainingreviewgroup را داخل همان گروه اجرا کنید."
-          : "")
+        "⚙️ گروه بررسی تمرین تنظیم نشده است. دستور /trainingreviewgroup را داخل همان گروه اجرا کنید."
       );
     }
 
@@ -1944,9 +955,9 @@ export function registerTraining(bot) {
       INSERT INTO training_reviews(
         session_id,telegram_id,skill,mode,
         duration_minutes,points,xp,status,created_at,
-        channel_id,source_chat_id,source_message_id
+        source_chat_id,source_message_id
       )
-      VALUES(?,?,?,?,?,?,?,'pending',?,?,?,?)
+      VALUES(?,?,?,?,?,?,?,'pending',?,?,?)
     `).run(
       session.id,
       id,
@@ -1956,7 +967,6 @@ export function registerTraining(bot) {
       points,
       xp,
       now,
-      String(skillChannel),
       chatId,
       sourceMessageId
     );
@@ -2033,15 +1043,6 @@ export function registerTraining(bot) {
         WHERE id=? AND status='active'
       `).run(session.id);
 
-      try {
-        await requestTrainingProfileVideo(bot, id, chatId);
-      } catch (error) {
-        console.error(
-          "TRAINING_PROFILE_PHOTO_REQUEST_ERROR:",
-          error?.description || error?.message || error
-        );
-      }
-
       return ctx.reply(
         "✅ تمرین برای بررسی به گروه اطلاعات ناظران ارسال شد. پس از تصمیم ناظر، امتیاز و XP ثبت می‌شود."
       );
@@ -2115,30 +1116,6 @@ export function registerTraining(bot) {
     );
   });
 
-  // SET SKILL CHANNEL
-
-  bot.command("skillchannel", async ctx => {
-    if (!isManager(ctx)) return;
-
-    const id = String(ctx.match || "").trim();
-
-    if (
-      !(/^-?\d{5,20}$/.test(id) ||
-        /^@[A-Za-z0-9_]{5,32}$/.test(id))
-    ) {
-      return ctx.reply(
-        "دستور: /skillchannel شناسه_کانال یا @ChannelUsername\n" +
-        "نمونه: /skillchannel -1001234567890"
-      );
-    }
-
-    setSetting("skill_channel_id", id);
-
-    return ctx.reply(
-      "✅ کانال مهارت تنظیم شد؛ پروفایل‌های دائمی نیز در همین کانال منتشر می‌شوند."
-    );
-  });
-
   // TEXT PROFILE
 
   bot.command("trainingprofile", async ctx => {
@@ -2176,8 +1153,7 @@ export function registerTraining(bot) {
       `⟡ پروفایل مهارت مونتادوریا ⟡\n` +
       `👤 ${decoratedUserName(id, user?.display_name || userNameById(id))}\n` +
       `✨ XP: ${Number(user?.xp || 0)} | 🎖 Level: ${Number(user?.level || 1)}\n\n` +
-      `${body}\n\n` +
-      "🔥 هر مهارت با رسیدن به ۱۰۰ امتیاز، به آتش رنگی کامل می‌رسد."
+      `${body}`
     );
   });
 
@@ -2235,33 +1211,6 @@ export function registerTraining(bot) {
       report,
       ctx.callbackQuery.message
     );
-
-    // به‌روزرسانی کارت دائمی بازیکن.
-    try {
-      await updatePersistentSkillProfile(
-        bot,
-        approved.telegram_id
-      );
-    } catch (error) {
-      console.error(
-        "TRAINING_PROFILE_UPDATE_ERROR:",
-        error?.description || error?.message || error
-      );
-
-      try {
-        await bot.api.sendMessage(
-          getSetting("skill_channel_id"),
-          `⚠️ به‌روزرسانی کارت مهارت کاربر ${approved.telegram_id} ناموفق بود؛ گزارش تمرین تأیید شده است.`
-        );
-      } catch {}
-
-      try {
-        await bot.api.sendMessage(
-          approved.telegram_id,
-          "⚠️ تمرین تأیید و امتیاز ثبت شد، اما ساخت کارت مهارت ناموفق بود. برای بررسی وضعیت، دستور #وضعیت_کارت_مهارت را در خصوصی ربات بفرست."
-        );
-      } catch {}
-    }
 
     await notifyPlayer(bot, approved, true);
   });
