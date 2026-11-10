@@ -440,6 +440,53 @@ async function notifyPlayer(bot, review, approved) {
   }
 }
 
+
+async function publishApprovedSkillProgress(bot, review) {
+  const channelId = getSetting("training_skill_channel_id");
+  if (!channelId) {
+    console.error("TRAINING_SKILL_CHANNEL_NOT_SET");
+    return false;
+  }
+
+  try {
+    const skill = db.prepare(`
+      SELECT points,sessions
+      FROM training_skills
+      WHERE telegram_id=? AND skill=?
+    `).get(String(review.telegram_id), review.skill);
+
+    if (!skill) throw new Error("اطلاعات مهارت پس از تأیید پیدا نشد.");
+
+    const user = userRecord(review.telegram_id);
+    const percent = Math.min(100, Math.max(0, Number(skill.points || 0)));
+    const playerName = decoratedUserName(
+      review.telegram_id,
+      user?.display_name || userNameById(review.telegram_id)
+    );
+
+    const message = [
+      "⟡ گزارش پیشرفت مهارت مونتادوریا ⟡",
+      "",
+      `👤 بازیکن: ${playerName}`,
+      `🥋 مهارت: ${review.skill}`,
+      `⭐ امتیاز مهارت: ${Number(skill.points || 0)}`,
+      `📈 میزان پیشرفت: ${percent}%`,
+      `🏋️ تمرین‌های تأییدشده: ${Number(skill.sessions || 0)}`,
+      `✨ XP فعلی: ${Number(user?.xp || 0)}`,
+      `🎖 Level فعلی: ${Number(user?.level || 1)}`
+    ].join("\n");
+
+    await bot.api.sendMessage(channelId, message);
+    return true;
+  } catch (error) {
+    console.error(
+      "TRAINING_SKILL_CHANNEL_SEND_ERROR:",
+      error?.description || error?.message || error
+    );
+    return false;
+  }
+}
+
 // DATABASE REVIEW OPERATIONS
 
 function approveReview(reviewId, reviewerId) {
@@ -1116,6 +1163,46 @@ export function registerTraining(bot) {
     );
   });
 
+
+  // SET SKILL CHANNEL
+
+  bot.command("trainingskillchannel", async ctx => {
+    if (!isManager(ctx)) {
+      return ctx.reply("⛔ فقط مدیر یا مالک می‌تواند کانال مهارت را تنظیم کند.");
+    }
+
+    const targetId = String(ctx.match || "").trim();
+    if (!targetId || !(/^-100\d{5,20}$/.test(targetId) || /^@[A-Za-z0-9_]{5,32}$/.test(targetId))) {
+      return ctx.reply(
+        "قالب دستور:\n/trainingskillchannel @ChannelUsername\nیا\n/trainingskillchannel -1001234567890"
+      );
+    }
+
+    try {
+      const chat = await ctx.api.getChat(targetId);
+      if (chat.type !== "channel") {
+        return ctx.reply("❌ مقصد واردشده کانال تلگرام نیست.");
+      }
+
+      const me = await ctx.api.getMe();
+      const member = await ctx.api.getChatMember(chat.id, me.id);
+      if (!["administrator", "creator"].includes(member.status) || member.can_post_messages === false) {
+        return ctx.reply("❌ ربات باید در کانال مدیر باشد و اجازهٔ ارسال پیام داشته باشد.");
+      }
+
+      setSetting("training_skill_channel_id", String(chat.id));
+      return ctx.reply(
+        "✅ کانال مهارت با موفقیت تنظیم شد.\nشناسه: " + chat.id
+      );
+    } catch (error) {
+      console.error("TRAINING_SKILL_CHANNEL_SETUP_ERROR:", error?.description || error?.message || error);
+      return ctx.reply(
+        "❌ تنظیم کانال ناموفق بود. شناسه/آیدی کانال و دسترسی مدیریتی ربات را بررسی کن.\n" +
+        String(error?.description || error?.message || error).slice(0, 250)
+      );
+    }
+  });
+
   // TEXT PROFILE
 
   bot.command("trainingprofile", async ctx => {
@@ -1211,6 +1298,8 @@ export function registerTraining(bot) {
       report,
       ctx.callbackQuery.message
     );
+
+    await publishApprovedSkillProgress(bot, approved);
 
     await notifyPlayer(bot, approved, true);
   });
