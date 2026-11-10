@@ -4,6 +4,7 @@ import { registerSetNames } from "./src/setnames.js"
 import { registerMandatoryMembership } from "./src/mandatory_membership.js"
 import { registerObserver } from "./src/observer.js"
 import { registerTraining } from "./src/training.js";
+import { registerCombat } from "./src/combat.js";
 import { registerRegistrations } from "./src/registrations.js"
 
 const token = process.env.TELEGRAM_BOT_TOKEN
@@ -18,6 +19,7 @@ const bot = new Bot(token)
 registerSetNames(bot)
 registerMandatoryMembership(bot)
 registerTraining(bot);
+registerCombat(bot);
 registerCommands(bot)
 registerObserver(bot)
 registerRegistrations(bot)
