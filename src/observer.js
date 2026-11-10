@@ -1232,6 +1232,10 @@ export function registerObserver(bot) {
       WHERE r.race = 'خون‌آشام'
         AND COALESCE(n.last_blood_at, r.updated_at) <= ?
         AND COALESCE(r.last_blood_reminder_at, 0) <= ?
+        AND NOT EXISTS (
+          SELECT 1 FROM observer_active_map m
+          WHERE m.telegram_id = r.telegram_id
+        )
     `).all(twelveHoursAgo, twelveHoursAgo);
 
     for (const person of dueUsers) {
@@ -1328,19 +1332,19 @@ export function registerObserver(bot) {
           .join("\n")
           .replace("در گروه مپ", "در همین گروه مپ");
 
-        const groupMessage = needType === "food"
-          ? `🍽️ <b>یادآوری غذا</b>\n\n${mention}، ${reminderDetail}`
+        const privateMessage = needType === "food"
+          ? `🍽️ <b>یادآوری غذا</b>\n\n${reminderDetail}`
           : needType === "sleep"
-            ? `🌙 <b>یادآوری خواب</b>\n\n${mention}، ${reminderDetail}`
-            : `⚠️ <b>یادآوری وضعیت شخصیت</b>\n\n${mention}، زمان رسیدگی به یکی از نیازهای دوره‌ای شخصیتت گذشته است. لطفاً وضعیت مربوطه را ثبت کن.`;
+            ? `🌙 <b>یادآوری خواب</b>\n\n${reminderDetail}`
+            : `🩸 <b>یادآوری خون</b>\n\nزمان نوشیدن خون رسیده است. پس از انجام آن، در گروه مپ هشتگ #خون را ثبت کن.`;
 
         try {
-          await bot.api.sendMessage(chatId, groupMessage, {
+          await bot.api.sendMessage(telegramId, privateMessage, {
             parse_mode: "HTML",
             disable_web_page_preview: true
           });
         } catch (error) {
-          console.error("ارسال یادآوری نیاز ناموفق بود:", telegramId, needType, error.message || error);
+          console.error("ارسال اخطار خصوصی نیاز ناموفق بود:", telegramId, needType, error.message || error);
           return;
         }
 
@@ -1375,10 +1379,7 @@ export function registerObserver(bot) {
           const requiredUntil = currentTime + 120 * 60;
           if (latestUntil < requiredUntil) {
             try {
-              await bot.api.sendMessage(chatId,
-                `⛔ ${mention} به حد ${WARNING_LIMIT} اخطار فعال نیازهای شخصیت رسیده است. محدودیت ارسال پیام به مدت ۲ ساعت در گروه‌های نقش‌آفرینی اعمال می‌شود.`,
-                { parse_mode: "HTML" }
-              );
+              await bot.api.sendMessage(telegramId, `⛔ ${mention} به حد ${WARNING_LIMIT} اخطار فعال نیازهای شخصیت رسیده است. محدودیت ارسال پیام به مدت ۲ ساعت در گروه‌های نقش‌آفرینی اعمال می‌شود.`, { parse_mode: "HTML" });
             } catch {}
             await restrictAcrossGroups(
               bot.api, telegramId,

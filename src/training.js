@@ -856,12 +856,7 @@ async function requestTrainingProfileVideo(
   let privateError = null;
 
   try {
-    sent = await bot.api.sendMessage(id, prompt, {
-      reply_markup: {
-        force_reply: true,
-        input_field_placeholder: "ارسال ویدیوی کارت مهارت"
-      }
-    });
+    sent = await bot.api.sendMessage(id, prompt);
   } catch (error) {
     privateError = error;
   }
