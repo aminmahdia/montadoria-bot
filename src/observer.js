@@ -1272,6 +1272,48 @@ export function registerObserver(bot) {
   };
 
 
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS observer_food_sleep_exemptions (
+      telegram_id INTEGER PRIMARY KEY,
+      exempted_by INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `);
+
+  bot.hears(/^#معاف_از_غذا_و_خواب +([0-9]+)$/u, async ctx => {
+    if (!isOwner(ctx)) return;
+    const targetId = Number(ctx.match[1]);
+
+    db.prepare(`
+      INSERT INTO observer_food_sleep_exemptions
+        (telegram_id, exempted_by, created_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(telegram_id) DO UPDATE SET
+        exempted_by = excluded.exempted_by,
+        created_at = excluded.created_at
+    `).run(targetId, ctx.from.id, now());
+
+    audit(ctx.from.id, "food_sleep_exemption_added", String(targetId));
+    return ctx.reply("✅ معافیت دائمی غذا و خواب ثبت شد.");
+  });
+
+  bot.hears(/^#لغو_معافیت_غذا_و_خواب +([0-9]+)$/u, async ctx => {
+    if (!isOwner(ctx)) return;
+    const targetId = Number(ctx.match[1]);
+
+    const result = db.prepare(
+      "DELETE FROM observer_food_sleep_exemptions WHERE telegram_id = ?"
+    ).run(targetId);
+
+    audit(ctx.from.id, "food_sleep_exemption_removed", String(targetId));
+    return ctx.reply(
+      result.changes
+        ? "✅ معافیت غذا و خواب لغو شد."
+        : "این کاربر معافیت غذا و خواب نداشت."
+    );
+  });
+
   // MONTADORIA_NEEDS_REMINDER_V2
   for (const column of ["last_food_warning_at", "last_sleep_warning_at", "last_blood_warning_at"]) {
     try {
@@ -1396,12 +1438,18 @@ export function registerObserver(bot) {
         const enteredAt = timestampToUnix(person.entered_at);
         const foodAt = timestampToUnix(person.last_food_at) || enteredAt;
         const sleepAt = timestampToUnix(person.last_sleep_at) || enteredAt;
-        await warnForNeed(person, "food", foodAt, 8 * 3600,
-          "🍽️ یادآوری غذا\nزمان ثبت غذای شخصیتت رسیده است. در گروه مپ از هشتگ #خوردن استفاده کن.",
-          "last_food_warning_at");
-        await warnForNeed(person, "sleep", sleepAt, 24 * 3600,
-          "🌙 یادآوری خواب\nزمان ثبت خواب شخصیتت رسیده است. در گروه مپ از هشتگ #خواب استفاده کن.",
-          "last_sleep_warning_at");
+        const needsExempt = db.prepare(
+          "SELECT 1 FROM observer_food_sleep_exemptions WHERE telegram_id = ?"
+        ).get(person.telegram_id);
+
+        if (!needsExempt) {
+          await warnForNeed(person, "food", foodAt, 8 * 3600,
+            "🍽️ یادآوری غذا\nزمان ثبت غذای شخصیتت رسیده است. در گروه مپ از هشتگ #خوردن استفاده کن.",
+            "last_food_warning_at");
+          await warnForNeed(person, "sleep", sleepAt, 24 * 3600,
+            "🌙 یادآوری خواب\nزمان ثبت خواب شخصیتت رسیده است. در گروه مپ از هشتگ #خواب استفاده کن.",
+            "last_sleep_warning_at");
+        }
 
         if (person.race === "خون‌آشام") {
           const bloodAt = timestampToUnix(person.last_blood_at) ||
