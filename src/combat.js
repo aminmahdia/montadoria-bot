@@ -1,306 +1,766 @@
 import db from "./database.js";
 import { randomInt } from "node:crypto";
-import { awardCombatVictoryXP, xpAwardText } from "./xp.js";
+import {
+  awardCombatVictoryXP,
+  xpAwardText,
+  deductCombatTimeoutXP
+} from "./xp.js";
 
-const DUEL_TTL = 15 * 60;
+const TURN_SECONDS = 180;
+const INVITE_SECONDS = 15 * 60;
+const MAX_ACTIVE_DUELS = 100;
+const MAX_ROUNDS = 10;
+const MAX_ACTION_LENGTH = 220;
+
 const WEAPONS = [
-  ["شمشیر یک‌دست", "شمشیر", 22, 7, 2], ["شمشیر دوسر", "شمشیر", 28, 5, 2],
-  ["شمشیر بلند", "شمشیر", 26, 6, 3], ["شمشیر کوتاه", "شمشیر", 17, 9, 1],
-  ["شمشیر پهن", "شمشیر", 25, 5, 2], ["شمشیر خمیده", "شمشیر", 23, 7, 2],
-  ["کاتانا", "شمشیر", 24, 8, 2], ["واکیزاشی", "شمشیر", 18, 9, 1],
-  ["شمشیر پهلوانی", "شمشیر", 29, 4, 3], ["شمشیر تشریفاتی", "شمشیر", 15, 7, 2],
-  ["راپیر", "شمشیر", 19, 10, 2], ["فلوره", "شمشیر", 16, 10, 1],
-  ["سابر", "شمشیر", 21, 9, 2], ["فالشیون", "شمشیر", 24, 6, 2],
-  ["شمشیر گلادیاتوری", "شمشیر", 23, 7, 2], ["شمشیر اسکاتلندی", "شمشیر", 27, 5, 3],
-  ["خنجر", "خنجر", 13, 10, 1], ["خنجر دو لبه", "خنجر", 15, 10, 1],
-  ["خنجر خمیده", "خنجر", 14, 11, 1], ["دِرک", "خنجر", 16, 9, 1],
-  ["استیلتو", "خنجر", 17, 10, 1], ["کارد شکاری", "خنجر", 16, 8, 1],
-  ["چاقوی رزمی", "خنجر", 15, 10, 1], ["پنجه بوکس", "خنجر", 18, 9, 1],
-  ["تبر دستی", "تبر", 20, 7, 2], ["تبر جنگی", "تبر", 27, 4, 3],
-  ["تبر دوسر", "تبر", 29, 4, 3], ["تبر فرانکی", "تبر", 22, 7, 2],
-  ["تبر دسته‌بلند", "تبر", 26, 5, 3], ["گرز", "گرز", 24, 5, 2],
-  ["گرز زنجیری", "گرز", 27, 6, 3], ["چماق", "گرز", 17, 6, 1],
-  ["پتک جنگی", "گرز", 29, 3, 3], ["دَبوس", "گرز", 22, 6, 2],
-  ["نیزه", "نیزه", 22, 7, 4], ["نیزه بلند", "نیزه", 25, 5, 5],
-  ["نیزه کوتاه", "نیزه", 18, 9, 2], ["پیک", "نیزه", 24, 6, 4],
-  ["هلبرد", "نیزه", 29, 4, 4], ["گلیو", "نیزه", 25, 6, 3],
-  ["ناگیناتا", "نیزه", 26, 6, 4], ["نیزه سه‌شاخ", "نیزه", 21, 7, 3],
-  ["نیزه پرتابی", "نیزه", 17, 9, 5], ["چنگک جنگی", "نیزه", 19, 7, 3],
-  ["کمان کوتاه", "کمان", 18, 8, 5], ["کمان بلند", "کمان", 24, 6, 7],
-  ["کمان ترکیبی", "کمان", 25, 7, 7], ["کمان خمیده", "کمان", 22, 8, 6],
-  ["تیرکمان", "کمان", 14, 10, 4], ["تیر و کمان جنگی", "کمان", 23, 7, 7],
-  ["زوبین", "پرتابی", 19, 8, 6], ["نیزه‌انداز", "پرتابی", 21, 7, 7],
-  ["تبر پرتابی", "پرتابی", 20, 7, 5], ["چاکرام", "پرتابی", 18, 9, 5],
-  ["فلاخن", "پرتابی", 15, 9, 6], ["دارت", "پرتابی", 12, 10, 4],
-  ["شمشیر زنجیری", "زنجیری", 21, 8, 3], ["شلاق", "زنجیری", 14, 9, 3],
-  ["زنجیر جنگی", "زنجیری", 20, 7, 3], ["سای", "رزمی", 15, 10, 1],
-  ["تونفا", "رزمی", 17, 8, 1], ["ننشاکو", "رزمی", 19, 9, 2],
-  ["باتوم", "رزمی", 16, 8, 1], ["بو", "رزمی", 18, 7, 2],
-  ["جو", "رزمی", 16, 9, 2], ["کاما", "رزمی", 18, 9, 1],
-  ["کوبوتان", "رزمی", 11, 10, 1], ["پنجه ببر", "رزمی", 17, 9, 1],
-  ["سپر سبک", "سپر", 8, 7, 1], ["سپر برجسته", "سپر", 12, 4, 1],
-  ["سپر شمشیری", "سپر", 16, 5, 1], ["سپر گرد", "سپر", 10, 6, 1]
+  ["شمشیر یک‌دست", "شمشیر", 22, 7, 2],
+  ["شمشیر دوسر", "شمشیر", 27, 5, 2],
+  ["شمشیر بلند", "شمشیر", 25, 6, 3],
+  ["شمشیر کوتاه", "شمشیر", 17, 9, 1],
+  ["شمشیر پهن", "شمشیر", 24, 5, 2],
+  ["شمشیر خمیده", "شمشیر", 22, 7, 2],
+  ["کاتانا", "شمشیر", 23, 8, 2],
+  ["واکیزاشی", "شمشیر", 18, 9, 1],
+  ["شمشیر پهلوانی", "شمشیر", 28, 4, 3],
+  ["راپیر", "شمشیر", 19, 10, 2],
+  ["فلوره", "شمشیر", 16, 10, 1],
+  ["سابر", "شمشیر", 21, 9, 2],
+  ["فالشیون", "شمشیر", 24, 6, 2],
+  ["شمشیر گلادیاتوری", "شمشیر", 23, 7, 2],
+  ["شمشیر اسکاتلندی", "شمشیر", 27, 5, 3],
+
+  ["خنجر", "خنجر", 13, 10, 1],
+  ["خنجر دو لبه", "خنجر", 15, 10, 1],
+  ["خنجر خمیده", "خنجر", 14, 11, 1],
+  ["دِرک", "خنجر", 16, 9, 1],
+  ["استیلتو", "خنجر", 16, 10, 1],
+  ["کارد شکاری", "خنجر", 15, 8, 1],
+  ["چاقوی رزمی", "خنجر", 15, 10, 1],
+
+  ["تبر دستی", "تبر", 20, 7, 2],
+  ["تبر جنگی", "تبر", 27, 4, 3],
+  ["تبر دوسر", "تبر", 28, 4, 3],
+  ["تبر فرانکی", "تبر", 22, 7, 2],
+  ["تبر دسته‌بلند", "تبر", 26, 5, 3],
+
+  ["گرز", "گرز", 23, 5, 2],
+  ["گرز زنجیری", "گرز", 26, 6, 3],
+  ["چماق", "گرز", 17, 6, 1],
+  ["پتک جنگی", "گرز", 29, 3, 3],
+  ["دَبوس", "گرز", 22, 6, 2],
+
+  ["نیزه", "نیزه", 22, 7, 4],
+  ["نیزه بلند", "نیزه", 25, 5, 5],
+  ["نیزه کوتاه", "نیزه", 18, 9, 2],
+  ["پیک", "نیزه", 24, 6, 4],
+  ["هلبرد", "نیزه", 28, 4, 4],
+  ["گلیو", "نیزه", 24, 6, 3],
+  ["ناگیناتا", "نیزه", 25, 6, 4],
+  ["نیزه سه‌شاخ", "نیزه", 21, 7, 3],
+
+  ["کمان کوتاه", "کمان", 18, 8, 5],
+  ["کمان بلند", "کمان", 24, 6, 7],
+  ["کمان ترکیبی", "کمان", 24, 7, 7],
+  ["کمان خمیده", "کمان", 22, 8, 6],
+  ["تیرکمان", "کمان", 14, 10, 4],
+
+  ["زوبین", "پرتابی", 19, 8, 6],
+  ["نیزه‌انداز", "پرتابی", 21, 7, 7],
+  ["تبر پرتابی", "پرتابی", 20, 7, 5],
+  ["چاکرام", "پرتابی", 18, 9, 5],
+  ["فلاخن", "پرتابی", 15, 9, 6],
+  ["دارت", "پرتابی", 12, 10, 4],
+
+  ["شمشیر زنجیری", "زنجیری", 21, 8, 3],
+  ["شلاق", "زنجیری", 14, 9, 3],
+  ["زنجیر جنگی", "زنجیری", 20, 7, 3],
+
+  ["سای", "رزمی", 15, 10, 1],
+  ["تونفا", "رزمی", 17, 8, 1],
+  ["ننشاکو", "رزمی", 19, 9, 2],
+  ["باتوم", "رزمی", 16, 8, 1],
+  ["بو", "رزمی", 18, 7, 2],
+  ["جو", "رزمی", 16, 9, 2],
+  ["کاما", "رزمی", 18, 9, 1],
+  ["کوبوتان", "رزمی", 11, 10, 1],
+
+  ["سپر سبک", "سپر", 8, 7, 1],
+  ["سپر برجسته", "سپر", 12, 4, 1],
+  ["سپر گرد", "سپر", 10, 6, 1]
 ];
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS combat_weapons (
- id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE,
- kind TEXT NOT NULL, damage INTEGER NOT NULL, speed INTEGER NOT NULL,
- reach INTEGER NOT NULL, custom INTEGER NOT NULL DEFAULT 0,
- approved INTEGER NOT NULL DEFAULT 1, created_by TEXT, created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS combat_loadouts (
- telegram_id TEXT PRIMARY KEY, weapon_id INTEGER NOT NULL DEFAULT 1
-);
-CREATE TABLE IF NOT EXISTS combat_duels (
- id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL,
- challenger_id TEXT NOT NULL, opponent_id TEXT NOT NULL,
- status TEXT NOT NULL DEFAULT 'pending', turn INTEGER NOT NULL DEFAULT 1,
- hp_a INTEGER NOT NULL DEFAULT 100, hp_b INTEGER NOT NULL DEFAULT 100,
- last_action_at INTEGER NOT NULL, action_a TEXT, action_b TEXT,
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+ kind TEXT NOT NULL,
+ damage INTEGER NOT NULL,
+ speed INTEGER NOT NULL,
+ reach INTEGER NOT NULL,
+ custom INTEGER NOT NULL DEFAULT 0,
+ approved INTEGER NOT NULL DEFAULT 1,
+ created_by TEXT,
  created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS combat_duels_status_idx ON combat_duels(status, created_at);
+
+CREATE TABLE IF NOT EXISTS combat_loadouts (
+ telegram_id TEXT PRIMARY KEY,
+ weapon_id INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS combat_duels (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ chat_id TEXT NOT NULL,
+ challenger_id TEXT NOT NULL,
+ opponent_id TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending',
+ turn INTEGER NOT NULL DEFAULT 1,
+ hp_a INTEGER NOT NULL DEFAULT 100,
+ hp_b INTEGER NOT NULL DEFAULT 100,
+ last_action_at INTEGER NOT NULL,
+ action_a TEXT,
+ action_b TEXT,
+ created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS combat_duels_status_idx
+ON combat_duels(status, created_at);
 `);
 
-const insertWeapon = db.prepare(`INSERT OR IGNORE INTO combat_weapons
-(name,kind,damage,speed,reach,custom,approved,created_at) VALUES(?,?,?,?,?,0,1,?)`);
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some(item => item.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
 
-const seed = db.transaction(() => {
-  const now = Math.floor(Date.now()/1000);
-  for (const w of WEAPONS) insertWeapon.run(...w, now);
-});
-seed();
+ensureColumn("combat_duels", "turn_owner_id", "TEXT");
+ensureColumn("combat_duels", "turn_deadline_at", "INTEGER");
+ensureColumn("combat_duels", "timeout_stage", "INTEGER NOT NULL DEFAULT 0");
+
+db.exec(`
+  UPDATE combat_duels
+  SET
+    turn_owner_id = CASE
+      WHEN action_a IS NOT NULL AND action_b IS NULL
+      THEN opponent_id
+      ELSE challenger_id
+    END,
+    turn_deadline_at = last_action_at + ${TURN_SECONDS},
+    timeout_stage = 0
+  WHERE status = 'active'
+    AND turn_owner_id IS NULL
+`);
+
+const insertWeapon = db.prepare(`
+  INSERT INTO combat_weapons
+    (name,kind,damage,speed,reach,custom,approved,created_at)
+  VALUES(?,?,?,?,?,0,1,?)
+  ON CONFLICT(name) DO UPDATE SET
+    kind=excluded.kind,
+    damage=excluded.damage,
+    speed=excluded.speed,
+    reach=excluded.reach
+  WHERE combat_weapons.custom=0
+`);
+
+db.transaction(() => {
+  const now = Math.floor(Date.now() / 1000);
+  for (const weapon of WEAPONS) {
+    insertWeapon.run(...weapon, now);
+  }
+})();
+
 function manager(ctx) {
-  const role = db.prepare("SELECT role FROM users WHERE telegram_id=?").get(String(ctx.from?.id))?.role;
-  return ["owner", "moderator", "admin"].includes(String(role || "").toLowerCase());
+  const role = db.prepare(
+    "SELECT role FROM users WHERE telegram_id=?"
+  ).get(String(ctx.from?.id))?.role;
+
+  return ["owner", "moderator", "admin"].includes(
+    String(role || "").toLowerCase()
+  );
 }
 
 function playerName(id) {
-  const u = db.prepare("SELECT display_name,username FROM users WHERE telegram_id=?").get(String(id));
-  return u?.display_name || (u?.username ? "@"+u.username : "بازیکن "+id);
+  const user = db.prepare(`
+    SELECT display_name,username
+    FROM users
+    WHERE telegram_id=?
+  `).get(String(id));
+
+  return user?.display_name ||
+    (user?.username ? "@" + user.username : "بازیکن " + id);
 }
 
 function getWeapon(id) {
-  return db.prepare(`SELECT w.* FROM combat_loadouts l JOIN combat_weapons w ON w.id=l.weapon_id
-    WHERE l.telegram_id=? AND w.approved=1`).get(String(id)) ||
-    db.prepare("SELECT * FROM combat_weapons WHERE approved=1 ORDER BY id LIMIT 1").get();
+  return db.prepare(`
+    SELECT w.*
+    FROM combat_loadouts l
+    JOIN combat_weapons w ON w.id=l.weapon_id
+    WHERE l.telegram_id=? AND w.approved=1
+  `).get(String(id)) || db.prepare(`
+    SELECT *
+    FROM combat_weapons
+    WHERE approved=1
+    ORDER BY id
+    LIMIT 1
+  `).get();
 }
 
 function getTraining(id, kind) {
-  const row = db.prepare(`SELECT COALESCE(SUM(points),0) AS points FROM training_skills
-    WHERE telegram_id=? AND (skill LIKE ? OR skill LIKE ?)`)
-    .get(String(id), `%${kind}%`, `%${kind === "شمشیر" ? "سلاح" : kind}%`);
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(points),0) AS points
+    FROM training_skills
+    WHERE telegram_id=?
+      AND (skill LIKE ? OR skill LIKE ?)
+  `).get(
+    String(id),
+    `%${kind}%`,
+    `%${kind === "شمشیر" ? "سلاح" : kind}%`
+  );
+
   return Math.min(20, Math.floor(Number(row?.points || 0) / 20));
 }
 
-function cleanExpired() {
-  const limit = Math.floor(Date.now()/1000) - DUEL_TTL;
-  db.prepare("UPDATE combat_duels SET status='expired' WHERE status='pending' AND created_at<?").run(limit);
-  db.prepare("UPDATE combat_duels SET status='draw' WHERE status='active' AND last_action_at<?").run(limit);
+function cleanExpiredInvitations() {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(`
+    UPDATE combat_duels
+    SET status='expired'
+    WHERE status='pending' AND created_at <= ?
+  `).run(now - INVITE_SECONDS);
 }
 
-function rollAttack(attacker, defender, weapon, move, defenderMove) {
-  const skill = getTraining(attacker, weapon.kind);
-  const defense = defenderMove === "دفاع" ? 12 : defenderMove === "جا خالی" ? 8 : 0;
-  const attackBonus = move === "حمله سنگین" ? 8 : move === "حمله سریع" ? 2 : 0;
+function parseAction(raw) {
+  const text = String(raw || "").trim().slice(0, MAX_ACTION_LENGTH);
+
+  if (text.length < 2) return { error: "short" };
+
+  const forbidden = /خون.?آشام|گرگ.?نما|قدرت.?نژادی|قدرت.?خون|کنترل.?خون|تغییر.?شکل|تبدیل.*(گرگ|حیوان)|نامرئی|پرواز|تله.?پاتی|بازسازی.?فوری|سرعت.?فراطبیعی|قدرت.?فراطبیعی/iu;
+
+  if (forbidden.test(text)) return { error: "racial" };
+
+  let kind = "attack";
+  let style = "normal";
+
+  if (/جا\s*خالی|جاخالی|گریز|کنار\s*می‌روم|از\s*مسیر\s*ضربه\s*خارج/iu.test(text)) {
+    kind = "dodge";
+  } else if (/دفاع|سپر|مهار|دفع\s*ضربه|مسدود|ضربه\s*را\s*می‌گیرم/iu.test(text)) {
+    kind = "defense";
+  } else if (/حمله\s*سنگین|ضربه\s*سنگین|محکم|با\s*تمام\s*نیرو|سهمگین/iu.test(text)) {
+    style = "heavy";
+  } else if (/حمله\s*سریع|ضربه\s*سریع|پیاپی|پی‌درپی|چابک/iu.test(text)) {
+    style = "quick";
+  }
+
+  return { kind, style, text };
+}
+
+function readAction(value) {
+  if (value === "PASS") {
+    return { kind: "pass", style: "normal", text: "از دست دادن نوبت" };
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && ["attack", "defense", "dodge"].includes(parsed.kind)) {
+      return parsed;
+    }
+  } catch {}
+
+  return { kind: "pass", style: "normal", text: "حرکت ثبت‌نشده" };
+}
+
+function actionLabel(action) {
+  if (action.kind === "pass") return "نوبت از دست رفت";
+  if (action.kind === "defense") return "حالت دفاعی";
+  if (action.kind === "dodge") return "جاخالی";
+  if (action.style === "heavy") return "حمله سنگین";
+  if (action.style === "quick") return "حمله سریع";
+  return "حمله معمولی";
+}
+
+function strike(attackerId, defenderId, weapon, attack, defense) {
+  if (attack.kind !== "attack") {
+    return {
+      damage: 0,
+      text: attack.kind === "pass"
+        ? "حرکتی انجام نشد"
+        : "در حالت دفاعی ماند"
+    };
+  }
+
+  const skill = getTraining(attackerId, weapon.kind);
+  const attackBonus = attack.style === "heavy" ? 7
+    : attack.style === "quick" ? 2 : 0;
+
   const hit = randomInt(1, 21) + weapon.speed + skill + attackBonus;
-  const guard = 10 + defense + randomInt(1, 11);
+  const guardBonus = defense.kind === "defense" ? 10
+    : defense.kind === "dodge" ? 5 : 0;
+  const guard = 10 + randomInt(1, 11) + guardBonus;
 
-  if (hit <= guard) return { damage: 0, text: "ضربه مهار شد" };
+  if (
+    defense.kind === "dodge" &&
+    randomInt(1, 101) <= 35
+  ) {
+    return { damage: 0, text: "حریف با جاخالی از ضربه گریخت" };
+  }
 
-  let damage = weapon.damage + randomInt(-4, 6) + skill - (defenderMove === "دفاع" ? 8 : 0);
-  if (move === "حمله سنگین") damage += 7;
-  if (move === "حمله سریع") damage -= 4;
+  if (hit <= guard) {
+    return { damage: 0, text: "ضربه مهار شد" };
+  }
 
-  damage = Math.max(2, Math.min(38, damage));
-  return { damage, text: `ضربه وارد شد: ${damage} آسیب` };
+  let damage = weapon.damage + randomInt(-3, 6) + skill;
+
+  if (attack.style === "heavy") damage += 6;
+  if (attack.style === "quick") damage -= 4;
+
+  if (defense.kind === "defense") {
+    damage = Math.floor(damage * 0.45);
+  } else if (defense.kind === "dodge") {
+    damage = Math.floor(damage * 0.75);
+  }
+
+  damage = Math.max(2, Math.min(35, damage));
+
+  return {
+    damage,
+    text: `ضربه موفق؛ ${damage} آسیب`
+  };
 }
 
-function duelText(d) {
-  return `⚔️ مبارزه شماره ${d.id}\n\n`+
-    `🥀 ${playerName(d.challenger_id)}: ${d.hp_a} HP\n`+
-    `🛡 ${playerName(d.opponent_id)}: ${d.hp_b} HP\n\n`+
-    `نوبت ${d.turn} — هر دو بازیکن باید حرکت خود را انتخاب کنند.`;
+function duelText(duel) {
+  const owner = duel.turn_owner_id;
+
+  return `⚔️ پرونده مبارزه شماره ${duel.id}
+
+🥀 ${playerName(duel.challenger_id)}: ${duel.hp_a} HP
+🛡 ${playerName(duel.opponent_id)}: ${duel.hp_b} HP
+
+دور: ${duel.turn} از ${MAX_ROUNDS}
+نوبت فعلی: ${playerName(owner)}
+⏳ مهلت حرکت: ۳ دقیقه`;
 }
 
+const createDuel = db.transaction((chatId, a, b) => {
+  cleanExpiredInvitations();
 
-export function registerCombat(bot) {
-  const MAX_ACTIVE_DUELS = 100;
+  const busy = db.prepare(`
+    SELECT id
+    FROM combat_duels
+    WHERE status IN ('pending','active')
+      AND (
+        challenger_id IN (?,?) OR
+        opponent_id IN (?,?)
+      )
+    LIMIT 1
+  `).get(a, b, a, b);
 
-  const createDuel = db.transaction((chatId, a, b) => {
-    cleanExpired();
+  if (busy) return { error: "busy" };
 
-    const busy = db.prepare(`
-      SELECT id FROM combat_duels
-      WHERE status IN ('pending','active')
-      AND (challenger_id IN (?,?) OR opponent_id IN (?,?))
-      LIMIT 1
-    `).get(a, b, a, b);
+  const count = db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM combat_duels
+    WHERE status IN ('pending','active')
+  `).get().total;
 
-    if (busy) return { error: "busy" };
+  if (count >= MAX_ACTIVE_DUELS) return { error: "full" };
 
-    const count = db.prepare(`
-      SELECT COUNT(*) AS total FROM combat_duels
-      WHERE status IN ('pending','active')
-    `).get().total;
-
-    if (count >= MAX_ACTIVE_DUELS) return { error: "full" };
-
-    const now = Math.floor(Date.now() / 1000);
-    const info = db.prepare(`
-      INSERT INTO combat_duels
+  const now = Math.floor(Date.now() / 1000);
+  const info = db.prepare(`
+    INSERT INTO combat_duels
       (chat_id,challenger_id,opponent_id,last_action_at,created_at)
-      VALUES(?,?,?,?,?)
-    `).run(chatId, a, b, now, now);
+    VALUES(?,?,?,?,?)
+  `).run(chatId, a, b, now, now);
 
-    return { id: Number(info.lastInsertRowid) };
-  });
+  return { id: Number(info.lastInsertRowid) };
+});
 
-  const acceptDuel = db.transaction((id, uid) => {
-    cleanExpired();
+const acceptDuel = db.transaction((id, uid) => {
+  cleanExpiredInvitations();
 
-    const d = db.prepare(`
-      SELECT * FROM combat_duels
-      WHERE id=? AND status='pending' AND opponent_id=?
-    `).get(id, uid);
+  const duel = db.prepare(`
+    SELECT *
+    FROM combat_duels
+    WHERE id=? AND status='pending' AND opponent_id=?
+  `).get(id, uid);
 
-    if (!d) return null;
+  if (!duel) return null;
 
-    const now = Math.floor(Date.now() / 1000);
-    const result = db.prepare(`
+  const now = Math.floor(Date.now() / 1000);
+  const updated = db.prepare(`
+    UPDATE combat_duels
+    SET status='active',
+        turn=1,
+        turn_owner_id=challenger_id,
+        turn_deadline_at=?,
+        timeout_stage=0,
+        last_action_at=?
+    WHERE id=? AND status='pending' AND opponent_id=?
+  `).run(now + TURN_SECONDS, now, id, uid);
+
+  if (!updated.changes) return null;
+
+  return db.prepare(
+    "SELECT * FROM combat_duels WHERE id=?"
+  ).get(id);
+});
+
+const submitMove = db.transaction((id, uid, move) => {
+  const duel = db.prepare(`
+    SELECT *
+    FROM combat_duels
+    WHERE id=? AND status='active'
+  `).get(id);
+
+  if (!duel) return { error: "invalid" };
+
+  if (![duel.challenger_id, duel.opponent_id].includes(uid)) {
+    return { error: "invalid" };
+  }
+
+  if (String(duel.turn_owner_id) !== uid) {
+    return { error: "not_turn", owner: duel.turn_owner_id };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+
+  if (Number(duel.turn_deadline_at || 0) <= now) {
+    return { error: "timeout" };
+  }
+
+  const column = uid === duel.challenger_id ? "action_a" : "action_b";
+  const saved = db.prepare(`
+    UPDATE combat_duels
+    SET ${column}=?,
+        last_action_at=?,
+        turn_owner_id=?,
+        turn_deadline_at=?
+    WHERE id=? AND status='active'
+      AND turn_owner_id=?
+      AND ${column} IS NULL
+  `).run(
+    JSON.stringify(move),
+    now,
+    uid === duel.challenger_id ? duel.opponent_id : duel.challenger_id,
+    now + TURN_SECONDS,
+    id,
+    uid
+  );
+
+  if (!saved.changes) return { error: "already" };
+
+  const fresh = db.prepare(
+    "SELECT * FROM combat_duels WHERE id=?"
+  ).get(id);
+
+  if (!fresh.action_a || !fresh.action_b) {
+    return {
+      waiting: true,
+      id,
+      nextPlayer: fresh.turn_owner_id,
+      deadline: fresh.turn_deadline_at
+    };
+  }
+
+  const actionA = readAction(fresh.action_a);
+  const actionB = readAction(fresh.action_b);
+  const weaponA = getWeapon(fresh.challenger_id);
+  const weaponB = getWeapon(fresh.opponent_id);
+
+  const hitA = strike(
+    fresh.challenger_id,
+    fresh.opponent_id,
+    weaponA,
+    actionA,
+    actionB
+  );
+
+  const hitB = strike(
+    fresh.opponent_id,
+    fresh.challenger_id,
+    weaponB,
+    actionB,
+    actionA
+  );
+
+  const hpA = Math.max(0, fresh.hp_a - hitB.damage);
+  const hpB = Math.max(0, fresh.hp_b - hitA.damage);
+
+  const done = hpA === 0 || hpB === 0 || fresh.turn >= MAX_ROUNDS;
+  const winner = hpA === hpB
+    ? null
+    : hpA > hpB ? fresh.challenger_id : fresh.opponent_id;
+
+  db.prepare(`
+    UPDATE combat_duels
+    SET hp_a=?,
+        hp_b=?,
+        turn=turn+1,
+        action_a=NULL,
+        action_b=NULL,
+        status=?,
+        turn_owner_id=?,
+        turn_deadline_at=?,
+        timeout_stage=0,
+        last_action_at=?
+    WHERE id=? AND status='active'
+  `).run(
+    hpA,
+    hpB,
+    done ? (winner ? "finished" : "draw") : "active",
+    fresh.challenger_id,
+    now + TURN_SECONDS,
+    now,
+    id
+  );
+
+  return {
+    resolved: true,
+    id,
+    turn: fresh.turn,
+    challenger: fresh.challenger_id,
+    opponent: fresh.opponent_id,
+    weaponA: weaponA.name,
+    weaponB: weaponB.name,
+    actionA,
+    actionB,
+    hitA: hitA.text,
+    hitB: hitB.text,
+    hpA,
+    hpB,
+    done,
+    winner
+  };
+});
+
+const processOneTimeout = db.transaction((id, now) => {
+  const duel = db.prepare(`
+    SELECT *
+    FROM combat_duels
+    WHERE id=? AND status='active'
+      AND turn_deadline_at IS NOT NULL
+      AND turn_deadline_at <= ?
+  `).get(id, now);
+
+  if (!duel) return null;
+
+  if (Number(duel.timeout_stage || 0) === 0) {
+    const missedColumn =
+      String(duel.turn_owner_id) === String(duel.challenger_id)
+        ? "action_a"
+        : "action_b";
+
+    const nextPlayer =
+      String(duel.turn_owner_id) === String(duel.challenger_id)
+        ? duel.opponent_id
+        : duel.challenger_id;
+
+    const updated = db.prepare(`
       UPDATE combat_duels
-      SET status='active',last_action_at=?
-      WHERE id=? AND status='pending' AND opponent_id=?
-    `).run(now, id, uid);
-
-    if (!result.changes) return null;
-    return db.prepare("SELECT * FROM combat_duels WHERE id=?").get(id);
-  });
-
-  const submitMove = db.transaction((id, uid, move) => {
-    cleanExpired();
-
-    const d = db.prepare(`
-      SELECT * FROM combat_duels WHERE id=? AND status='active'
-    `).get(id);
-
-    if (!d || ![d.challenger_id, d.opponent_id].includes(uid)) {
-      return { error: "invalid" };
-    }
-
-    const col = uid === d.challenger_id ? "action_a" : "action_b";
-    if (d[col]) return { error: "already" };
-
-    const now = Math.floor(Date.now() / 1000);
-    const saved = db.prepare(`
-      UPDATE combat_duels SET ${col}=?,last_action_at=?
-      WHERE id=? AND status='active' AND ${col} IS NULL
-    `).run(move, now, id);
-
-    if (!saved.changes) return { error: "already" };
-
-    const fresh = db.prepare("SELECT * FROM combat_duels WHERE id=?").get(id);
-
-    if (!fresh.action_a || !fresh.action_b) {
-      return { waiting: true };
-    }
-
-    const wa = getWeapon(fresh.challenger_id);
-    const wb = getWeapon(fresh.opponent_id);
-
-    const hitA = rollAttack(
-      fresh.challenger_id, fresh.opponent_id,
-      wa, fresh.action_a, fresh.action_b
-    );
-    const hitB = rollAttack(
-      fresh.opponent_id, fresh.challenger_id,
-      wb, fresh.action_b, fresh.action_a
-    );
-
-    const hpA = Math.max(0, fresh.hp_a - hitB.damage);
-    const hpB = Math.max(0, fresh.hp_b - hitA.damage);
-    const done = hpA === 0 || hpB === 0 || fresh.turn >= 10;
-    const winner = hpA === hpB
-      ? null
-      : hpA > hpB ? fresh.challenger_id : fresh.opponent_id;
-
-    db.prepare(`
-      UPDATE combat_duels
-      SET hp_a=?,hp_b=?,turn=turn+1,
-          action_a=NULL,action_b=NULL,status=?,last_action_at=?
+      SET ${missedColumn}='PASS',
+          turn_owner_id=?,
+          turn_deadline_at=?,
+          timeout_stage=1,
+          last_action_at=?
       WHERE id=? AND status='active'
-    `).run(
-      hpA, hpB,
-      done ? (winner ? "finished" : "draw") : "active",
-      now, id
-    );
+        AND turn_deadline_at <= ?
+    `).run(nextPlayer, now + TURN_SECONDS, now, id, now);
+
+    if (!updated.changes) return null;
 
     return {
-      resolved: true,
-      id,
-      turn: fresh.turn,
-      challenger: fresh.challenger_id,
-      opponent: fresh.opponent_id,
-      weaponA: wa.name,
-      weaponB: wb.name,
-      hitA: hitA.text,
-      hitB: hitB.text,
-      hpA,
-      hpB,
-      done,
-      winner
+      type: "passed",
+      chatId: duel.chat_id,
+      duelId: duel.id,
+      missed: duel.turn_owner_id,
+      next: nextPlayer
     };
-  });
+  }
 
+  const updated = db.prepare(`
+    UPDATE combat_duels
+    SET status='cancelled',
+        turn_deadline_at=NULL,
+        last_action_at=?
+    WHERE id=? AND status='active'
+      AND turn_deadline_at <= ?
+  `).run(now, id, now);
+
+  if (!updated.changes) return null;
+
+  return {
+    type: "cancelled",
+    chatId: duel.chat_id,
+    duelId: duel.id,
+    playerA: duel.challenger_id,
+    playerB: duel.opponent_id
+  };
+});
+
+async function processDueDuels(api) {
+  const now = Math.floor(Date.now() / 1000);
+
+  cleanExpiredInvitations();
+
+  const due = db.prepare(`
+    SELECT id
+    FROM combat_duels
+    WHERE status='active'
+      AND turn_deadline_at IS NOT NULL
+      AND turn_deadline_at <= ?
+    ORDER BY turn_deadline_at
+    LIMIT 100
+  `).all(now);
+
+  for (const item of due) {
+    const result = processOneTimeout(item.id, now);
+    if (!result) continue;
+
+    try {
+      if (result.type === "passed") {
+        await api.sendMessage(
+          result.chatId,
+          `⏳ مهلت ${playerName(result.missed)} به پایان رسید.
+نوبت به ${playerName(result.next)} منتقل شد.
+۳ دقیقه فرصت باقی است.`
+        );
+      } else {
+        const penaltyA = deductCombatTimeoutXP(result.playerA, 20);
+        const penaltyB = deductCombatTimeoutXP(result.playerB, 20);
+
+        await api.sendMessage(
+          result.chatId,
+          `⛓️ مبارزه شماره ${result.duelId} لغو شد.
+هر دو بازیکن مهلت خود را از دست دادند.
+
+🥀 ${playerName(result.playerA)}: کسر ${penaltyA?.lostXP ?? 0} XP
+🥀 ${playerName(result.playerB)}: کسر ${penaltyB?.lostXP ?? 0} XP`
+        );
+      }
+    } catch (error) {
+      console.error("Combat timeout notification error:", error);
+    }
+  }
+}
+
+function formatResult(result) {
+  return `⚔️ نتیجه دور ${result.turn}
+
+🥀 ${playerName(result.challenger)}
+سلاح: ${result.weaponA}
+حرکت: ${actionLabel(result.actionA)}
+نتیجه: ${result.hitA}
+
+🛡 ${playerName(result.opponent)}
+سلاح: ${result.weaponB}
+حرکت: ${actionLabel(result.actionB)}
+نتیجه: ${result.hitB}
+
+━━━━━━━━━━━━━━
+❤️ ${playerName(result.challenger)}: ${result.hpA} HP
+❤️ ${playerName(result.opponent)}: ${result.hpB} HP`;
+}
+
+export function registerCombat(bot) {
   bot.hears(/^#راهنمای_مبارزه$/u, async ctx => {
     await ctx.reply(
-      "⚔️ راهنمای مبارزه مونتادوریا\n\n" +
-      "۱. برای دعوت، روی پیام حریف ریپلای کن:\n" +
-      "#مبارزه\n\n" +
-      "۲. حریف دعوت را بپذیرد:\n" +
-      "#پذیرش شماره\n\n" +
-      "۳. هر دو بازیکن در هر نوبت یکی از حرکت‌ها را بفرستند:\n" +
-      "#حرکت شماره حمله سریع\n" +
-      "#حرکت شماره حمله سنگین\n" +
-      "#حرکت شماره دفاع\n" +
-      "#حرکت شماره جا خالی\n\n" +
-      "برای دیدن سلاح‌ها:\n#سلاح‌ها\n\n" +
-      "برای انتخاب سلاح:\n#انتخاب_سلاح شماره\n\n" +
-      "هر بازیکن فقط یک حرکت در هر نوبت ثبت می‌کند. " +
-      "حداکثر ۱۰۰ مبارزه می‌توانند هم‌زمان فعال باشند."
+      `⚔️ راهنمای مبارزه مونتادوریا
+
+۱. روی پیام حریف ریپلای کن و بنویس:
+#مبارزه
+
+۲. حریف دعوت را بپذیرد:
+#پذیرش شماره
+
+۳. بازیکن صاحب نوبت، حرکت آزاد خود را ثبت کند:
+#حرکت شماره متن حرکت
+
+نمونه:
+#حرکت 12 با شمشیر از سمت راست به او ضربه می‌زنم
+
+نمونه دفاع:
+#حرکت 12 سپرم را بالا می‌آورم و ضربه را مهار می‌کنم
+
+نمونه جاخالی:
+#حرکت 12 سریع به سمت چپ جاخالی می‌دهم
+
+⏳ مهلت هر نوبت: ۳ دقیقه
+🩸 دو بار از دست دادن مهلت پیاپی: لغو مبارزه و کسر ۲۰ XP از هر بازیکن
+⚔️ حداکثر مبارزه هم‌زمان: ۱۰۰
+
+#سلاح‌ها
+#انتخاب_سلاح شماره`
     );
   });
 
-  bot.hears(/^#سلاح‌ها$/u, async ctx => {
+  bot.hears(/^#سلاح‌ها(?:\s+([0-9]+))?$/u, async ctx => {
+    const page = Math.max(1, Number(ctx.match[1] || 1));
     const rows = db.prepare(`
       SELECT id,name,kind,damage,speed,reach
-      FROM combat_weapons WHERE approved=1 ORDER BY kind,id
+      FROM combat_weapons
+      WHERE approved=1
+      ORDER BY
+        CASE kind
+          WHEN 'شمشیر' THEN 1
+          WHEN 'خنجر' THEN 2
+          WHEN 'تبر' THEN 3
+          WHEN 'گرز' THEN 4
+          WHEN 'نیزه' THEN 5
+          WHEN 'کمان' THEN 6
+          WHEN 'پرتابی' THEN 7
+          WHEN 'زنجیری' THEN 8
+          WHEN 'رزمی' THEN 9
+          WHEN 'سپر' THEN 10
+          ELSE 11
+        END,
+        damage DESC,
+        speed DESC,
+        name
     `).all();
 
-    const groups = new Map();
-    for (const w of rows) {
-      if (!groups.has(w.kind)) groups.set(w.kind, []);
-      groups.get(w.kind).push(
-        `${w.id}. ${w.name} — آسیب ${w.damage}، سرعت ${w.speed}، برد ${w.reach}`
-      );
+    const pageSize = 12;
+    const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+
+    if (page > totalPages) {
+      return ctx.reply(`❌ این صفحه وجود ندارد. تعداد صفحات: ${totalPages}`);
     }
 
-    let out = "⚔️ فهرست سلاح‌های مونتادوریا\n";
-    for (const [kind, items] of groups) {
-      out += `\n【${kind}】\n${items.join("\n")}\n`;
-    }
+    const selected = rows.slice((page - 1) * pageSize, page * pageSize);
+    const output = selected.map(w =>
+      `${w.id}. ${w.name} | ${w.kind}
+آسیب: ${w.damage} | سرعت: ${w.speed} | برد: ${w.reach}`
+    );
 
-    if (out.length > 3900) {
-      out = out.slice(0, 3850) + "\n… فهرست طولانی است.";
-    }
+    await ctx.reply(
+      `⚔️ زرادخانه مونتادوریا
+صفحه ${page} از ${totalPages}
 
-    await ctx.reply(out);
+${output.join("\n\n")}
+
+برای صفحه بعد:
+#سلاح‌ها ${Math.min(page + 1, totalPages)}`
+    );
   });
 
-  bot.hears(/^#انتخاب_سلاح\s+(\d+)$/u, async ctx => {
+  bot.hears(/^#انتخاب_سلاح\s+([0-9]+)$/u, async ctx => {
+    const uid = String(ctx.from.id);
+
+    const busy = db.prepare(`
+      SELECT 1
+      FROM combat_duels
+      WHERE status='active'
+        AND (challenger_id=? OR opponent_id=?)
+      LIMIT 1
+    `).get(uid, uid);
+
+    if (busy) {
+      return ctx.reply("⛔ هنگام مبارزه امکان تغییر سلاح وجود ندارد.");
+    }
+
     const weapon = db.prepare(`
-      SELECT id,name FROM combat_weapons
+      SELECT id,name
+      FROM combat_weapons
       WHERE id=? AND approved=1
     `).get(Number(ctx.match[1]));
 
@@ -311,12 +771,12 @@ export function registerCombat(bot) {
       VALUES(?,?)
       ON CONFLICT(telegram_id)
       DO UPDATE SET weapon_id=excluded.weapon_id
-    `).run(String(ctx.from.id), weapon.id);
+    `).run(uid, weapon.id);
 
-    await ctx.reply(`✅ سلاح فعال تو «${weapon.name}» شد.`);
+    await ctx.reply(`⚔️ سلاح فعال تو «${weapon.name}» شد.`);
   });
 
-  bot.hears(/^#افزودن_سلاح\s+(.+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\d+)$/u, async ctx => {
+  bot.hears(/^#افزودن_سلاح\s+(.+)\s+(\S+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)$/u, async ctx => {
     if (!manager(ctx)) return;
 
     const name = ctx.match[1].trim();
@@ -333,31 +793,38 @@ export function registerCombat(bot) {
       !Number.isInteger(reach) || reach < 1 || reach > 10
     ) {
       return ctx.reply(
-        "قالب:\n#افزودن_سلاح نام سلاح دسته آسیب سرعت برد"
+        "قالب:\n#افزودن_سلاح نام_سلاح دسته آسیب سرعت برد"
       );
     }
 
     try {
       db.prepare(`
         INSERT INTO combat_weapons
-        (name,kind,damage,speed,reach,custom,approved,created_by,created_at)
+          (name,kind,damage,speed,reach,custom,approved,created_by,created_at)
         VALUES(?,?,?,?,?,1,1,?,?)
       `).run(
-        name, kind, damage, speed, reach,
-        String(ctx.from.id), Math.floor(Date.now() / 1000)
+        name,
+        kind,
+        damage,
+        speed,
+        reach,
+        String(ctx.from.id),
+        Math.floor(Date.now() / 1000)
       );
 
-      await ctx.reply(`✅ سلاح «${name}» اضافه شد.`);
+      await ctx.reply(`✅ سلاح «${name}» به زرادخانه اضافه شد.`);
     } catch {
-      await ctx.reply("❌ نام این سلاح از قبل ثبت شده است.");
+      await ctx.reply("❌ نام این سلاح قبلاً ثبت شده است.");
     }
   });
 
   bot.hears(/^#مبارزه$/u, async ctx => {
-    cleanExpired();
+    cleanExpiredInvitations();
 
     if (!ctx.message?.reply_to_message?.from) {
-      return ctx.reply("برای دعوت، روی پیام حریف ریپلای کن و #مبارزه بفرست.");
+      return ctx.reply(
+        "برای دعوت به مبارزه، روی پیام حریف ریپلای کن و #مبارزه بفرست."
+      );
     }
 
     const opponent = ctx.message.reply_to_message.from;
@@ -386,60 +853,90 @@ export function registerCombat(bot) {
     }
 
     await ctx.reply(
-      `⚔️ ${playerName(a)}، ${playerName(b)} را به مبارزه دعوت کرد.\n` +
-      `شماره مبارزه: ${result.id}\n` +
-      `حریف برای پذیرش بزند:\n#پذیرش ${result.id}`
+      `⚔️ دعوت رسمی مبارزه
+
+🥀 ${playerName(a)}
+در برابر
+🛡 ${playerName(b)}
+
+شماره پرونده: ${result.id}
+
+برای پذیرش:
+#پذیرش ${result.id}
+
+دعوت تا ۱۵ دقیقه معتبر است.`
     );
   });
 
-  bot.hears(/^#پذیرش\s+(\d+)$/u, async ctx => {
+  bot.hears(/^#پذیرش\s+([0-9]+)$/u, async ctx => {
     const id = Number(ctx.match[1]);
-    const current = acceptDuel(id, String(ctx.from.id));
+    const duel = acceptDuel(id, String(ctx.from.id));
 
-    if (!current) {
+    if (!duel) {
       return ctx.reply("❌ دعوت پیدا نشد، منقضی شده یا برای تو نیست.");
     }
 
     await ctx.reply(
-      "✅ مبارزه آغاز شد!\n\n" + duelText(current) +
-      `\n\nحرکت خود را بفرست:\n` +
-      `#حرکت ${id} حمله سریع\n` +
-      `#حرکت ${id} حمله سنگین\n` +
-      `#حرکت ${id} دفاع\n` +
-      `#حرکت ${id} جا خالی`
+      `⚔️ مبارزه آغاز شد.
+
+${duelText(duel)}
+
+حرکت اول با ${playerName(duel.challenger_id)} است.
+برای ثبت حرکت:
+#حرکت ${id} متن حرکت`
     );
   });
 
-  bot.hears(/^#حرکت\s+(\d+)\s+(حمله سریع|حمله سنگین|دفاع|جا خالی)$/u, async ctx => {
+  bot.hears(/^#حرکت\s+([0-9]+)\s+([\s\S]{2,250})$/u, async ctx => {
     const id = Number(ctx.match[1]);
-    const move = ctx.match[2];
     const uid = String(ctx.from.id);
+    const parsed = parseAction(ctx.match[2]);
 
-    const result = submitMove(id, uid, move);
+    if (parsed.error === "short") {
+      return ctx.reply("❌ حرکت باید توضیح کافی داشته باشد.");
+    }
+
+    if (parsed.error === "racial") {
+      return ctx.reply(
+        "⛔ استفاده از قابلیت‌های فراطبیعی و نژادی در مبارزه مجاز نیست. فقط حرکت رزمی عادی ثبت کن."
+      );
+    }
+
+    await processDueDuels(bot.api);
+
+    const result = submitMove(id, uid, parsed);
 
     if (result.error === "invalid") {
       return ctx.reply("❌ مبارزه فعال یا مجاز پیدا نشد.");
     }
 
+    if (result.error === "not_turn") {
+      return ctx.reply(
+        `⏳ هنوز نوبت تو نیست. نوبت ${playerName(result.owner)} است.`
+      );
+    }
+
+    if (result.error === "timeout") {
+      return ctx.reply("⏳ مهلت این نوبت تمام شده است.");
+    }
+
     if (result.error === "already") {
-      return ctx.reply("⏳ حرکت این نوبت را قبلاً ثبت کرده‌ای.");
+      return ctx.reply("⛔ حرکت این نوبت قبلاً ثبت شده است.");
     }
 
     if (result.waiting) {
-      return ctx.reply("✅ حرکت ثبت شد؛ منتظر انتخاب حریف بمان.");
+      return ctx.reply(
+        `✅ حرکت ثبت شد.
+نوبت ${playerName(result.nextPlayer)} است.
+۳ دقیقه فرصت دارد.`
+      );
     }
 
-    await ctx.reply(
-      `⚔️ نتیجه نوبت ${result.turn}\n` +
-      `${playerName(result.challenger)} (${result.weaponA}): ${result.hitA}\n` +
-      `${playerName(result.opponent)} (${result.weaponB}): ${result.hitB}\n\n` +
-      `❤️ ${playerName(result.challenger)}: ${result.hpA}\n` +
-      `❤️ ${playerName(result.opponent)}: ${result.hpB}`
-    );
+    await ctx.reply(formatResult(result));
 
     if (result.done) {
       if (!result.winner) {
-        return ctx.reply("🤝 مبارزه مساوی شد.");
+        return ctx.reply("🤝 مبارزه با نتیجه مساوی پایان یافت.");
       }
 
       const loser = result.winner === result.challenger
@@ -447,12 +944,14 @@ export function registerCombat(bot) {
         : result.challenger;
 
       const reward = awardCombatVictoryXP(
-        result.winner, loser, `combat:${id}:winner`
+        result.winner,
+        loser,
+        `combat:${id}:winner`
       );
 
       return ctx.reply(
-        `🏆 برنده: ${playerName(result.winner)}\n` +
-        `${xpAwardText(reward) || "پاداش XP به دلیل محدودیت روزانه یا ثبت قبلی تعلق نگرفت."}`
+        `🏆 پیروز میدان: ${playerName(result.winner)}
+${xpAwardText(reward) || "پاداش XP به دلیل محدودیت روزانه یا ثبت قبلی تعلق نگرفت."}`
       );
     }
 
@@ -460,13 +959,14 @@ export function registerCombat(bot) {
       "SELECT * FROM combat_duels WHERE id=?"
     ).get(id);
 
-    await ctx.reply(
-      duelText(next) +
-      `\n\n#حرکت ${id} حمله سریع` +
-      `\n#حرکت ${id} حمله سنگین` +
-      `\n#حرکت ${id} دفاع` +
-      `\n#حرکت ${id} جا خالی`
-    );
+    await ctx.reply(duelText(next));
   });
-}
 
+  const timer = setInterval(() => {
+    processDueDuels(bot.api).catch(error => {
+      console.error("Combat timer error:", error);
+    });
+  }, 5000);
+
+  timer.unref?.();
+}

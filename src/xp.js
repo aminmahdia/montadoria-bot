@@ -178,3 +178,55 @@ export function xpAwardText(result) {
   return `\n\n✨ پاداش فعالیت: +${result.gainedXP} XP` +
     (result.levelUp ? `\n🎉 تبریک! به Level ${result.newLevel} رسیدی.` : "");
 }
+
+
+// MONTADORIA_COMBAT_TIMEOUT_PENALTY_V1
+export function deductCombatTimeoutXP(telegramId, amount = 20) {
+  const id = String(telegramId ?? "");
+  const value = Number(amount);
+
+  if (!/^\d{1,20}$/.test(id)) return null;
+  if (!Number.isSafeInteger(value) || value <= 0) return null;
+
+  try {
+    return db.transaction(() => {
+      const user = db.prepare(`
+        SELECT xp, level
+        FROM users
+        WHERE telegram_id = ?
+      `).get(id);
+
+      if (!user) return null;
+
+      const oldXP = Math.max(0, Number(user.xp || 0));
+      const oldLevel = Math.max(1, Number(user.level || 1));
+      const newXP = Math.max(0, oldXP - value);
+      const newLevel = calculateLevelFromXP(newXP);
+
+      const updated = db.prepare(`
+        UPDATE users
+        SET xp = ?, level = ?, updated_at = ?
+        WHERE telegram_id = ?
+      `).run(
+        newXP,
+        newLevel,
+        new Date().toISOString(),
+        id
+      );
+
+      if (updated.changes !== 1) return null;
+
+      return {
+        oldXP,
+        newXP,
+        oldLevel,
+        newLevel,
+        lostXP: oldXP - newXP
+      };
+    })();
+  } catch (error) {
+    console.error("Combat timeout XP penalty error:", error);
+    return null;
+  }
+}
+// END MONTADORIA_COMBAT_TIMEOUT_PENALTY_V1
