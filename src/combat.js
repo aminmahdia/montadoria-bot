@@ -10,7 +10,7 @@ const TURN_SECONDS = 180;
 const INVITE_SECONDS = 15 * 60;
 const MAX_ACTIVE_DUELS = 100;
 const MAX_ROUNDS = 10;
-const MAX_ACTION_LENGTH = 220;
+const MAX_ACTION_LENGTH = 250;
 
 const WEAPONS = [
   ["شمشیر یک‌دست", "شمشیر", 22, 7, 2],
@@ -137,6 +137,8 @@ function ensureColumn(table, column, definition) {
 ensureColumn("combat_duels", "turn_owner_id", "TEXT");
 ensureColumn("combat_duels", "turn_deadline_at", "INTEGER");
 ensureColumn("combat_duels", "timeout_stage", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("combat_duels", "energy_a", "INTEGER NOT NULL DEFAULT 100");
+ensureColumn("combat_duels", "energy_b", "INTEGER NOT NULL DEFAULT 100");
 
 db.exec(`
   UPDATE combat_duels
@@ -232,13 +234,15 @@ function cleanExpiredInvitations() {
 }
 
 function parseAction(raw) {
-  const text = String(raw || "").trim().slice(0, MAX_ACTION_LENGTH);
+  const text = String(raw || "").trim();
 
   if (text.length < 2) return { error: "short" };
 
   const forbidden = /خون.?آشام|گرگ.?نما|قدرت.?نژادی|قدرت.?خون|کنترل.?خون|تغییر.?شکل|تبدیل.*(گرگ|حیوان)|نامرئی|پرواز|تله.?پاتی|بازسازی.?فوری|سرعت.?فراطبیعی|قدرت.?فراطبیعی/iu;
 
+  // متن کامل باید بررسی شود؛ بریدن متن قبل از این بررسی راه دورزدن فیلتر بود.
   if (forbidden.test(text)) return { error: "racial" };
+  if (text.length > MAX_ACTION_LENGTH) return { error: "long" };
 
   let kind = "attack";
   let style = "normal";
@@ -335,7 +339,10 @@ function duelText(duel) {
   return `⚔️ پرونده مبارزه شماره ${duel.id}
 
 🥀 ${playerName(duel.challenger_id)}: ${duel.hp_a} HP
+${energyBar(duel.energy_a)} انرژی: ${duel.energy_a ?? 100}/100
+
 🛡 ${playerName(duel.opponent_id)}: ${duel.hp_b} HP
+${energyBar(duel.energy_b)} انرژی: ${duel.energy_b ?? 100}/100
 
 دور: ${duel.turn} از ${MAX_ROUNDS}
 نوبت فعلی: ${playerName(owner)}
@@ -376,14 +383,14 @@ const createDuel = db.transaction((chatId, a, b) => {
   return { id: Number(info.lastInsertRowid) };
 });
 
-const acceptDuel = db.transaction((id, uid) => {
+const acceptDuel = db.transaction((id, uid, chatId) => {
   cleanExpiredInvitations();
 
   const duel = db.prepare(`
     SELECT *
     FROM combat_duels
-    WHERE id=? AND status='pending' AND opponent_id=?
-  `).get(id, uid);
+    WHERE id=? AND status='pending' AND opponent_id=? AND chat_id=?
+  `).get(id, uid, chatId);
 
   if (!duel) return null;
 
@@ -396,8 +403,8 @@ const acceptDuel = db.transaction((id, uid) => {
         turn_deadline_at=?,
         timeout_stage=0,
         last_action_at=?
-    WHERE id=? AND status='pending' AND opponent_id=?
-  `).run(now + TURN_SECONDS, now, id, uid);
+    WHERE id=? AND status='pending' AND opponent_id=? AND chat_id=?
+  `).run(now + TURN_SECONDS, now, id, uid, chatId);
 
   if (!updated.changes) return null;
 
@@ -406,12 +413,156 @@ const acceptDuel = db.transaction((id, uid) => {
   ).get(id);
 });
 
-const submitMove = db.transaction((id, uid, move) => {
+
+function energyCost(action) {
+  if (action.kind === "pass") return 0;
+  if (action.kind === "defense") return 8;
+  if (action.kind === "dodge") return 10;
+  if (action.style === "heavy") return 35;
+  if (action.style === "quick") return 22;
+  return 12;
+}
+
+function prepareActionForEnergy(action, energy) {
+  const available = Math.max(0, Number(energy || 0));
+
+  if (
+    action.kind === "attack" &&
+    action.style === "heavy" &&
+    available < 35
+  ) {
+    return {
+      ...action,
+      style: "normal",
+      text: action.text + " (به‌دلیل انرژی کم، حرکت عادی اجرا شد)"
+    };
+  }
+
+  if (
+    action.kind === "attack" &&
+    action.style === "quick" &&
+    available < 22
+  ) {
+    return {
+      ...action,
+      style: "normal",
+      text: action.text + " (به‌دلیل انرژی کم، حرکت عادی اجرا شد)"
+    };
+  }
+
+  return action;
+}
+
+function nextEnergy(current, action) {
+  const value = Math.max(0, Math.min(100, Number(current ?? 100)));
+  const cost = Math.min(value, energyCost(action));
+  return Math.min(100, Math.max(0, value - cost) + 10);
+}
+
+function energyBar(value) {
+  const amount = Math.max(0, Math.min(100, Number(value || 0)));
+  const filled = Math.round(amount / 10);
+  return "🟦".repeat(filled) + "⬛".repeat(10 - filled);
+}
+
+function resolveRound(fresh, now) {
+  const energyAStart = Math.max(0, Math.min(100, Number(fresh.energy_a ?? 100)));
+  const energyBStart = Math.max(0, Math.min(100, Number(fresh.energy_b ?? 100)));
+
+  const actionA = prepareActionForEnergy(
+    readAction(fresh.action_a),
+    energyAStart
+  );
+  const actionB = prepareActionForEnergy(
+    readAction(fresh.action_b),
+    energyBStart
+  );
+
+  const energyA = nextEnergy(energyAStart, actionA);
+  const energyB = nextEnergy(energyBStart, actionB);
+
+  const weaponA = getWeapon(fresh.challenger_id);
+  const weaponB = getWeapon(fresh.opponent_id);
+
+  const hitA = strike(
+    fresh.challenger_id,
+    fresh.opponent_id,
+    weaponA,
+    actionA,
+    actionB
+  );
+
+  const hitB = strike(
+    fresh.opponent_id,
+    fresh.challenger_id,
+    weaponB,
+    actionB,
+    actionA
+  );
+
+  const hpA = Math.max(0, fresh.hp_a - hitB.damage);
+  const hpB = Math.max(0, fresh.hp_b - hitA.damage);
+
+  const done = hpA === 0 || hpB === 0 || fresh.turn >= MAX_ROUNDS;
+  const winner = hpA === hpB
+    ? null
+    : hpA > hpB ? fresh.challenger_id : fresh.opponent_id;
+
+  db.prepare(`
+    UPDATE combat_duels
+    SET hp_a=?,
+        hp_b=?,
+        energy_a=?,
+        energy_b=?,
+        turn=turn+1,
+        action_a=NULL,
+        action_b=NULL,
+        status=?,
+        turn_owner_id=?,
+        turn_deadline_at=?,
+        timeout_stage=0,
+        last_action_at=?
+    WHERE id=? AND status='active'
+  `).run(
+    hpA,
+    hpB,
+    energyA,
+    energyB,
+    done ? (winner ? "finished" : "draw") : "active",
+    fresh.challenger_id,
+    done ? null : now + TURN_SECONDS,
+    now,
+    fresh.id
+  );
+
+  return {
+    resolved: true,
+    id: fresh.id,
+    chatId: fresh.chat_id,
+    turn: fresh.turn,
+    challenger: fresh.challenger_id,
+    opponent: fresh.opponent_id,
+    weaponA: weaponA.name,
+    weaponB: weaponB.name,
+    actionA,
+    actionB,
+    hitA: hitA.text,
+    hitB: hitB.text,
+    hpA,
+    hpB,
+    energyA,
+    energyB,
+    done,
+    winner
+  };
+}
+
+const submitMove = db.transaction((id, uid, move, chatId) => {
   const duel = db.prepare(`
     SELECT *
     FROM combat_duels
-    WHERE id=? AND status='active'
-  `).get(id);
+    WHERE id=? AND status='active' AND chat_id=?
+  `).get(id, chatId);
 
   if (!duel) return { error: "invalid" };
 
@@ -463,75 +614,7 @@ const submitMove = db.transaction((id, uid, move) => {
     };
   }
 
-  const actionA = readAction(fresh.action_a);
-  const actionB = readAction(fresh.action_b);
-  const weaponA = getWeapon(fresh.challenger_id);
-  const weaponB = getWeapon(fresh.opponent_id);
-
-  const hitA = strike(
-    fresh.challenger_id,
-    fresh.opponent_id,
-    weaponA,
-    actionA,
-    actionB
-  );
-
-  const hitB = strike(
-    fresh.opponent_id,
-    fresh.challenger_id,
-    weaponB,
-    actionB,
-    actionA
-  );
-
-  const hpA = Math.max(0, fresh.hp_a - hitB.damage);
-  const hpB = Math.max(0, fresh.hp_b - hitA.damage);
-
-  const done = hpA === 0 || hpB === 0 || fresh.turn >= MAX_ROUNDS;
-  const winner = hpA === hpB
-    ? null
-    : hpA > hpB ? fresh.challenger_id : fresh.opponent_id;
-
-  db.prepare(`
-    UPDATE combat_duels
-    SET hp_a=?,
-        hp_b=?,
-        turn=turn+1,
-        action_a=NULL,
-        action_b=NULL,
-        status=?,
-        turn_owner_id=?,
-        turn_deadline_at=?,
-        timeout_stage=0,
-        last_action_at=?
-    WHERE id=? AND status='active'
-  `).run(
-    hpA,
-    hpB,
-    done ? (winner ? "finished" : "draw") : "active",
-    fresh.challenger_id,
-    now + TURN_SECONDS,
-    now,
-    id
-  );
-
-  return {
-    resolved: true,
-    id,
-    turn: fresh.turn,
-    challenger: fresh.challenger_id,
-    opponent: fresh.opponent_id,
-    weaponA: weaponA.name,
-    weaponB: weaponB.name,
-    actionA,
-    actionB,
-    hitA: hitA.text,
-    hitB: hitB.text,
-    hpA,
-    hpB,
-    done,
-    winner
-  };
+  return resolveRound(fresh, now);
 });
 
 const processOneTimeout = db.transaction((id, now) => {
@@ -569,6 +652,20 @@ const processOneTimeout = db.transaction((id, now) => {
 
     if (!updated.changes) return null;
 
+    const fresh = db.prepare(
+      "SELECT * FROM combat_duels WHERE id=?"
+    ).get(id);
+
+    // اگر حریف قبلاً حرکتش را ثبت کرده باشد، PASS باید همان لحظه دور را ببندد.
+    if (fresh?.action_a && fresh?.action_b) {
+      return {
+        ...resolveRound(fresh, now),
+        type: "resolved",
+        chatId: duel.chat_id,
+        missed: duel.turn_owner_id
+      };
+    }
+
     return {
       type: "passed",
       chatId: duel.chat_id,
@@ -576,6 +673,13 @@ const processOneTimeout = db.transaction((id, now) => {
       missed: duel.turn_owner_id,
       next: nextPlayer
     };
+  }
+
+  // کسر XP و لغو پرونده در یک تراکنش واحد انجام می‌شوند.
+  const penaltyA = deductCombatTimeoutXP(duel.challenger_id, 20);
+  const penaltyB = deductCombatTimeoutXP(duel.opponent_id, 20);
+  if (!penaltyA || !penaltyB) {
+    throw new Error(`Combat timeout XP penalty failed for duel ${id}`);
   }
 
   const updated = db.prepare(`
@@ -594,7 +698,9 @@ const processOneTimeout = db.transaction((id, now) => {
     chatId: duel.chat_id,
     duelId: duel.id,
     playerA: duel.challenger_id,
-    playerB: duel.opponent_id
+    playerB: duel.opponent_id,
+    lostA: penaltyA.lostXP,
+    lostB: penaltyB.lostXP
   };
 });
 
@@ -625,17 +731,39 @@ async function processDueDuels(api) {
 نوبت به ${playerName(result.next)} منتقل شد.
 ۳ دقیقه فرصت باقی است.`
         );
-      } else {
-        const penaltyA = deductCombatTimeoutXP(result.playerA, 20);
-        const penaltyB = deductCombatTimeoutXP(result.playerB, 20);
+      } else if (result.type === "resolved") {
+        await api.sendMessage(result.chatId, formatResult(result));
 
+        if (result.done && result.winner) {
+          const loser = result.winner === result.challenger
+            ? result.opponent
+            : result.challenger;
+          const reward = awardCombatVictoryXP(
+            result.winner,
+            loser,
+            `combat:${result.id}:winner`
+          );
+          await api.sendMessage(
+            result.chatId,
+            `🏆 پیروز میدان: ${playerName(result.winner)}
+${xpAwardText(reward) || "پاداش XP به دلیل محدودیت روزانه یا ثبت قبلی تعلق نگرفت."}`
+          );
+        } else if (result.done) {
+          await api.sendMessage(result.chatId, "🤝 مبارزه با نتیجه مساوی پایان یافت.");
+        } else {
+          const next = db.prepare(
+            "SELECT * FROM combat_duels WHERE id=?"
+          ).get(result.id);
+          await api.sendMessage(result.chatId, duelText(next));
+        }
+      } else {
         await api.sendMessage(
           result.chatId,
           `⛓️ مبارزه شماره ${result.duelId} لغو شد.
 هر دو بازیکن مهلت خود را از دست دادند.
 
-🥀 ${playerName(result.playerA)}: کسر ${penaltyA?.lostXP ?? 0} XP
-🥀 ${playerName(result.playerB)}: کسر ${penaltyB?.lostXP ?? 0} XP`
+🥀 ${playerName(result.playerA)}: کسر ${result.lostA} XP
+🥀 ${playerName(result.playerB)}: کسر ${result.lostB} XP`
         );
       }
     } catch (error) {
@@ -659,7 +787,110 @@ function formatResult(result) {
 
 ━━━━━━━━━━━━━━
 ❤️ ${playerName(result.challenger)}: ${result.hpA} HP
-❤️ ${playerName(result.opponent)}: ${result.hpB} HP`;
+${energyBar(result.energyA)} انرژی: ${result.energyA}/100
+
+❤️ ${playerName(result.opponent)}: ${result.hpB} HP
+${energyBar(result.energyB)} انرژی: ${result.energyB}/100`;
+}
+
+
+const WEAPON_KIND_ORDER = [
+  "شمشیر", "خنجر", "تبر", "گرز", "نیزه",
+  "کمان", "پرتابی", "زنجیری", "رزمی", "سپر"
+];
+
+function getWeaponKinds() {
+  const kinds = db.prepare(`
+    SELECT DISTINCT kind
+    FROM combat_weapons
+    WHERE approved=1
+  `).all().map(row => row.kind);
+
+  return kinds.sort((a, b) => {
+    const ai = WEAPON_KIND_ORDER.indexOf(a);
+    const bi = WEAPON_KIND_ORDER.indexOf(b);
+    const av = ai < 0 ? 999 : ai;
+    const bv = bi < 0 ? 999 : bi;
+    return av - bv || a.localeCompare(b, "fa");
+  });
+}
+
+function arsenalKeyboard(page, totalPages) {
+  const previous = Math.max(0, page - 1);
+  const next = Math.min(totalPages - 1, page + 1);
+
+  return {
+    inline_keyboard: [[
+      {
+        text: "صفحه قبل",
+        callback_data: `combat_weapons:${previous}`
+      },
+      {
+        text: "صفحه بعد",
+        callback_data: `combat_weapons:${next}`
+      }
+    ]]
+  };
+}
+
+function arsenalContent(page) {
+  const kinds = getWeaponKinds();
+  const totalPages = Math.max(1, kinds.length);
+  const current = Math.max(0, Math.min(totalPages - 1, page));
+  const kind = kinds[current];
+
+  if (!kind) {
+    return {
+      page: 0,
+      totalPages: 1,
+      text: "⚔️ زرادخانه خالی است.",
+      keyboard: arsenalKeyboard(0, 1)
+    };
+  }
+
+  const weapons = db.prepare(`
+    SELECT id,name,kind,damage,speed,reach
+    FROM combat_weapons
+    WHERE approved=1 AND kind=?
+    ORDER BY damage DESC, speed DESC, name
+  `).all(kind);
+
+  const lines = weapons.map(w =>
+    `${w.id}. ${w.name}
+آسیب: ${w.damage} | سرعت: ${w.speed} | برد: ${w.reach}`
+  );
+
+  const text = `⚔️ زرادخانه مونتادوریا
+
+دسته: ${kind}
+صفحه ${current + 1} از ${totalPages}
+تعداد سلاح‌ها: ${weapons.length}
+
+${lines.join("\n\n")}
+
+برای انتخاب سلاح:
+#انتخاب_سلاح شماره`;
+
+  return {
+    page: current,
+    totalPages,
+    text,
+    keyboard: arsenalKeyboard(current, totalPages)
+  };
+}
+
+async function showArsenal(ctx, page, edit = false) {
+  const result = arsenalContent(page);
+
+  if (edit) {
+    await ctx.editMessageText(result.text, {
+      reply_markup: result.keyboard
+    });
+  } else {
+    await ctx.reply(result.text, {
+      reply_markup: result.keyboard
+    });
+  }
 }
 
 export function registerCombat(bot) {
@@ -694,53 +925,23 @@ export function registerCombat(bot) {
     );
   });
 
-  bot.hears(/^#سلاح‌ها(?:\s+([0-9]+))?$/u, async ctx => {
-    const page = Math.max(1, Number(ctx.match[1] || 1));
-    const rows = db.prepare(`
-      SELECT id,name,kind,damage,speed,reach
-      FROM combat_weapons
-      WHERE approved=1
-      ORDER BY
-        CASE kind
-          WHEN 'شمشیر' THEN 1
-          WHEN 'خنجر' THEN 2
-          WHEN 'تبر' THEN 3
-          WHEN 'گرز' THEN 4
-          WHEN 'نیزه' THEN 5
-          WHEN 'کمان' THEN 6
-          WHEN 'پرتابی' THEN 7
-          WHEN 'زنجیری' THEN 8
-          WHEN 'رزمی' THEN 9
-          WHEN 'سپر' THEN 10
-          ELSE 11
-        END,
-        damage DESC,
-        speed DESC,
-        name
-    `).all();
+  bot.hears(/^#سلاح‌ها(?:\\s+([0-9]+))?$/u, async ctx => {
+    const requested = Math.max(1, Number(ctx.match[1] || 1));
+    await showArsenal(ctx, requested - 1, false);
+  });
 
-    const pageSize = 12;
-    const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
-
-    if (page > totalPages) {
-      return ctx.reply(`❌ این صفحه وجود ندارد. تعداد صفحات: ${totalPages}`);
+  bot.callbackQuery(/^combat_weapons:([0-9]+)$/u, async ctx => {
+    const page = Number(ctx.match[1]);
+    try {
+      await showArsenal(ctx, page, true);
+      await ctx.answerCallbackQuery();
+    } catch (error) {
+      console.error("Combat arsenal page error:", error);
+      await ctx.answerCallbackQuery({
+        text: "خطا در باز کردن صفحه سلاح‌ها",
+        show_alert: true
+      });
     }
-
-    const selected = rows.slice((page - 1) * pageSize, page * pageSize);
-    const output = selected.map(w =>
-      `${w.id}. ${w.name} | ${w.kind}
-آسیب: ${w.damage} | سرعت: ${w.speed} | برد: ${w.reach}`
-    );
-
-    await ctx.reply(
-      `⚔️ زرادخانه مونتادوریا
-صفحه ${page} از ${totalPages}
-
-${output.join("\n\n")}
-
-برای صفحه بعد:
-#سلاح‌ها ${Math.min(page + 1, totalPages)}`
-    );
   });
 
   bot.hears(/^#انتخاب_سلاح\s+([0-9]+)$/u, async ctx => {
@@ -870,7 +1071,7 @@ ${output.join("\n\n")}
 
   bot.hears(/^#پذیرش\s+([0-9]+)$/u, async ctx => {
     const id = Number(ctx.match[1]);
-    const duel = acceptDuel(id, String(ctx.from.id));
+    const duel = acceptDuel(id, String(ctx.from.id), String(ctx.chat.id));
 
     if (!duel) {
       return ctx.reply("❌ دعوت پیدا نشد، منقضی شده یا برای تو نیست.");
@@ -902,9 +1103,13 @@ ${duelText(duel)}
       );
     }
 
+    if (parsed.error === "long") {
+      return ctx.reply("❌ متن حرکت بیش از ۲۵۰ نویسه است.");
+    }
+
     await processDueDuels(bot.api);
 
-    const result = submitMove(id, uid, parsed);
+    const result = submitMove(id, uid, parsed, String(ctx.chat.id));
 
     if (result.error === "invalid") {
       return ctx.reply("❌ مبارزه فعال یا مجاز پیدا نشد.");
