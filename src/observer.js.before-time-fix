@@ -1,0 +1,1128 @@
+import db from "./database.js";
+
+const OWNER_ID = Number(process.env.OWNER_ID || 0);
+const OBSERVER_GROUP_ID = process.env.OBSERVER_GROUP_ID
+  ? Number(process.env.OBSERVER_GROUP_ID)
+  : null;
+
+const RESTRICTION_MINUTES = Math.max(1, Number(process.env.RESTRICTION_MINUTES || 30));
+
+const WARNING_LIMIT = Math.max(
+  1,
+  Number(process.env.WARNING_LIMIT || 3)
+);
+
+const ALLOWED_TAGS = [
+  "#ورود", "#خروج", "#خوردن", "#خون", "#خوابیدن", "#خواب",
+  "#پزشکی", "#خرید", "#فروش", "#انتقال",
+  "#خرید_ملک", "#فروش_ملک", "#خرید_خودرو",
+  "#فروش_خودرو", "#انتقال_مالکیت", "#شروع_کار",
+  "#پایان_کار", "#ماموریت", "#تمرین", "#مبارزه",
+  "#زخمی", "#بیهوش", "#مرگ", "#ازدواج", "#طلاق",
+  "#فرزندخواندگی", "#استخدام", "#اخراج", "#ارتقا",
+  "#تعطیلی", "#بازگشایی"
+];
+
+const WARNINGS = [
+  "این دیالوگه یا نامه‌ای که از دستگاه چاپ بیرون اومده؟ قالب رول رو رعایت کن.",
+  "ستاره و خط تیره باهات قهرن؟ اکشن و دیالوگ رو درست بنویس.",
+  "ناظر بیداره؛ این پیام هنوز از دروازهٔ قالب‌بندی رد نشده.",
+  "قوانین رول تزئینی نیستن. پیام رو اصلاح کن.",
+  "این یکی از نظر قالب‌بندی به تأیید دربار نرسید."
+];
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS rp_groups (
+    chat_id INTEGER PRIMARY KEY,
+    title TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    added_by INTEGER,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS observer_warnings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER,
+    reason TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    cleared_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS observer_username_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER NOT NULL,
+    old_username TEXT,
+    new_username TEXT,
+    changed_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS observer_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    details TEXT,
+    created_at TEXT NOT NULL
+  );
+`);
+
+const now = () => new Date().toISOString();
+
+function isOwner(ctx) {
+  return Boolean(OWNER_ID && ctx.from?.id === OWNER_ID);
+}
+
+function isGroup(chat) {
+  return chat && (chat.type === "group" || chat.type === "supergroup");
+}
+
+function isRegistered(chatId) {
+  return Boolean(
+    db.prepare(
+      "SELECT 1 FROM rp_groups WHERE chat_id = ? AND active = 1"
+    ).get(chatId)
+  );
+}
+
+function audit(actorId, action, details = "") {
+  db.prepare(`
+    INSERT INTO observer_audit
+      (actor_id, action, details, created_at)
+    VALUES (?, ?, ?, ?)
+  `).run(actorId, action, details, now());
+}
+
+function escapeHtml(value = "") {
+  return String(value).replace(/[&<>"']/g, char => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[char]);
+}
+
+async function report(bot, text) {
+  if (!OBSERVER_GROUP_ID) {
+    console.warn("[OBSERVER REPORT]", text);
+    return;
+  }
+
+  try {
+    await bot.api.sendMessage(OBSERVER_GROUP_ID, text, {
+      parse_mode: "HTML"
+    });
+  } catch (error) {
+    console.error("Observer report failed:", error.message);
+  }
+}
+
+function getActiveWarnings(telegramId) {
+  return db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM observer_warnings
+    WHERE telegram_id = ? AND active = 1
+  `).get(telegramId).total;
+}
+
+async function warn(ctx, reason) {
+  const user = ctx.from;
+  const chat = ctx.chat;
+
+  const result = db.prepare(`
+    INSERT INTO observer_warnings
+      (telegram_id, chat_id, message_id, reason, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(user.id, chat.id, ctx.msg.message_id, reason, now());
+
+  const total = getActiveWarnings(user.id);
+  const username = user.username ? `@${escapeHtml(user.username)}` : "بدون یوزرنیم";
+  const randomWarning = WARNINGS[Math.floor(Math.random() * WARNINGS.length)];
+
+  try {
+    await ctx.reply(
+      `⚠️ ${escapeHtml(randomWarning)}\nاخطار فعال: ${total}/${WARNING_LIMIT}`
+    );
+  } catch {}
+
+  await report(
+    ctx.api,
+    `⚠️ <b>اخطار نقش‌آفرینی</b>\n` +
+    `کاربر: ${escapeHtml(user.first_name || "نامشخص")}\n` +
+    `یوزرنیم: ${username}\n` +
+    `شناسه: <code>${user.id}</code>\n` +
+    `گروه: ${escapeHtml(chat.title || String(chat.id))}\n` +
+    `علت: ${escapeHtml(reason)}\n` +
+    `اخطار فعال: ${total}/${WARNING_LIMIT}\n` +
+    `شناسهٔ ثبت: <code>${result.lastInsertRowid}</code>`
+  );
+
+
+  if (total >= WARNING_LIMIT) {
+    const existingRestriction = db.prepare(`
+      SELECT 1 FROM observer_restrictions
+      WHERE telegram_id = ? AND restored_at IS NULL
+        AND restricted_until > ?
+      LIMIT 1
+    `).get(user.id, now());
+
+    if (!existingRestriction) {
+      await restrictAcrossGroups(
+        ctx.api,
+        user.id,
+        user.username || ""
+      );
+    }
+
+  }
+}
+
+function validateRoleplay(text) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  if (!lines.length) return { ok: true };
+
+  for (const line of lines) {
+    // هشتگ مجاز می‌تواند همراه توضیح در همان خط باشد.
+    const tag = line.match(/^(#\S+)(?:\s+.*)?$/);
+    if (tag && ALLOWED_TAGS.includes(tag[1])) continue;
+
+    // دیالوگ باید با خط تیره در دو طرف بسته شود.
+    if (/^-[^-].*-$/.test(line)) continue;
+
+    // اکشن باید با ستاره در دو طرف بسته شود.
+    if (/^\*[^*].*\*$/.test(line)) continue;
+
+    return {
+      ok: false,
+      reason: `قالب نامعتبر در این خط: ${line.slice(0, 120)}`
+    };
+  }
+
+  return { ok: true };
+}
+
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS observer_identity (
+    telegram_id INTEGER PRIMARY KEY,
+    character_code TEXT UNIQUE,
+    character_name TEXT,
+    celebrity_name TEXT,
+    photo_file_id TEXT,
+    approved INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+  );
+`);
+
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS observer_needs (
+    telegram_id INTEGER PRIMARY KEY,
+    last_food_at INTEGER,
+    last_sleep_at INTEGER,
+    sleep_until INTEGER,
+    last_blood_at INTEGER,
+    updated_at INTEGER
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS observer_active_map (
+    telegram_id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    entered_at INTEGER NOT NULL,
+    username TEXT
+  );
+`);
+
+
+
+  // ثبت هویت: /rpidentity شناسه کدشخصیت نامشخصیت
+  bot.command("rpidentity", async ctx => {
+    if (!isOwner(ctx)) {
+      return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
+    }
+
+    const parts = (ctx.match || "").trim().split(/\s+/);
+    const telegramId = Number(parts.shift());
+    const characterCode = parts.shift();
+    const characterName = parts.join(" ");
+
+    if (!Number.isSafeInteger(telegramId) || telegramId <= 0 ||
+        !characterCode || !characterName) {
+      return ctx.reply(
+        "روش استفاده:\n/rpidentity شناسه_تلگرام کد_شخصیت نام_شخصیت"
+      );
+    }
+
+    db.prepare(`
+      INSERT INTO observer_identity
+        (telegram_id, character_code, character_name, approved, updated_at)
+      VALUES (?, ?, ?, 0, ?)
+      ON CONFLICT(telegram_id) DO UPDATE SET
+        character_code = excluded.character_code,
+        character_name = excluded.character_name,
+        approved = 0,
+        updated_at = excluded.updated_at
+    `).run(telegramId, characterCode, characterName, now());
+
+    audit(ctx.from.id, "identity_created", `telegram_id=${telegramId}`);
+
+    return ctx.reply(
+      `✅ اطلاعات هویت ثبت شد.\nشناسه: ${telegramId}\nکد شخصیت: ${escapeHtml(characterCode)}\nنام شخصیت: ${escapeHtml(characterName)}\n\nوضعیت فعلی: در انتظار تأیید`
+    );
+  });
+
+
+  // ذخیره عکس کارت: مالک باید به پیام عکس پاسخ دهد.
+  bot.command("rpidentityphoto", async ctx => {
+    if (!isOwner(ctx)) {
+      return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
+    }
+
+    const targetId = Number((ctx.match || "").trim());
+    const replied = ctx.msg.reply_to_message;
+    const photos = replied?.photo;
+    const document = replied?.document;
+
+    let fileId = null;
+
+    if (photos?.length) {
+      fileId = photos[photos.length - 1].file_id;
+    } else if (
+      document?.mime_type &&
+      document.mime_type.startsWith("image/")
+    ) {
+      fileId = document.file_id;
+    }
+
+    if (!Number.isSafeInteger(targetId) || targetId <= 0 || !fileId) {
+      return ctx.reply(
+        "روش استفاده:\nابتدا به پیام عکس کارت پاسخ بده و بنویس:\n/rpidentityphoto شناسه_تلگرام"
+      );
+    }
+
+    const result = db.prepare(`
+      UPDATE observer_identity
+      SET photo_file_id = ?, updated_at = ?
+      WHERE telegram_id = ?
+    `).run(fileId, now(), targetId);
+
+    if (!result.changes) {
+      return ctx.reply(
+        "❌ ابتدا اطلاعات شخصیت را با /rpidentity ثبت کن."
+      );
+    }
+
+    audit(ctx.from.id, "identity_photo_updated",
+      `telegram_id=${targetId}`);
+
+    return ctx.reply(
+      `✅ عکس کارت به پروندهٔ کاربر ${targetId} متصل شد.`
+    );
+  });
+
+  // تأیید هویت: /rpidentityapprove شناسه
+  bot.command("rpidentityapprove", async ctx => {
+    if (!isOwner(ctx)) {
+      return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
+    }
+
+    const telegramId = Number((ctx.match || "").trim());
+
+    if (!Number.isSafeInteger(telegramId) || telegramId <= 0) {
+      return ctx.reply("روش استفاده: /rpidentityapprove شناسه_تلگرام");
+    }
+
+    const result = db.prepare(`
+      UPDATE observer_identity
+      SET approved = 1, updated_at = ?
+      WHERE telegram_id = ?
+    `).run(now(), telegramId);
+
+    if (!result.changes) {
+      return ctx.reply("❌ برای این شناسه اطلاعات هویتی ثبت نشده است.");
+    }
+
+    audit(ctx.from.id, "identity_approved", `telegram_id=${telegramId}`);
+
+    return ctx.reply(`✅ هویت کاربر ${telegramId} تأیید شد.`);
+  });
+
+// مدیریت پایدار نیازهای شخصیت
+function ensureNeeds(telegramId) {
+  db.prepare(`
+    INSERT OR IGNORE INTO observer_needs (telegram_id, updated_at)
+    VALUES (?, ?)
+  `).run(telegramId, now());
+
+  return db.prepare(`
+    SELECT * FROM observer_needs WHERE telegram_id = ?
+  `).get(telegramId);
+}
+
+function updateNeed(telegramId, field) {
+  const allowedFields = {
+    food: "last_food_at",
+    sleep: "last_sleep_at",
+    blood: "last_blood_at"
+  };
+
+  const column = allowedFields[field];
+  if (!column) throw new Error("Unknown need field");
+
+  ensureNeeds(telegramId);
+  db.prepare(`
+    UPDATE observer_needs
+    SET ${column} = ?, updated_at = ?
+    WHERE telegram_id = ?
+  `).run(now(), now(), telegramId);
+}
+
+export function registerObserver(bot) {
+
+  // MONTADORIA_RACE_SYSTEM_V1
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS observer_races (
+      telegram_id INTEGER PRIMARY KEY,
+      race TEXT NOT NULL,
+      assigned_by INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      last_blood_reminder_at INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+
+  const raceAliases = {
+    "انسان": "انسان",
+    "human": "انسان",
+    "خون‌آشام": "خون‌آشام",
+    "خون آشام": "خون‌آشام",
+    "vampire": "خون‌آشام",
+    "گرگینه": "گرگینه",
+    "werewolf": "گرگینه",
+    "تغییرشکل‌دهنده": "تغییرشکل‌دهنده",
+    "تغییر شکل دهنده": "تغییرشکل‌دهنده",
+    "shapeshifter": "تغییرشکل‌دهنده"
+  };
+
+  const canViewRaces = (ctx) => {
+    if (isOwner(ctx)) return true;
+    const row = db.prepare(
+      "SELECT role FROM users WHERE telegram_id = ?"
+    ).get(ctx.from.id);
+    return !!row && [
+      "moderator", "owner", "مدیر / ناظر", "مالک", "ناظر"
+    ].includes(String(row.role || "").trim().toLowerCase());
+  };
+
+  // مشاهده نژادها فقط از پی‌وی و برای مالک/ناظران
+  bot.command("rpraces", async ctx => {
+    if (ctx.chat.type !== "private") {
+      await ctx.reply("🔒 برای حفظ محرمانگی، این دستور را در پی‌وی ربات اجرا کن.");
+      return;
+    }
+
+    if (!canViewRaces(ctx)) {
+      await ctx.reply("⛔ اجازهٔ مشاهدهٔ اطلاعات محرمانهٔ نژادها را نداری.");
+      return;
+    }
+
+    const arg = String(ctx.match || "").trim();
+
+    if (arg && /^\d+$/.test(arg)) {
+      const targetId = Number(arg);
+      const row = db.prepare(`
+        SELECT r.telegram_id, r.race, r.updated_at,
+               u.username, u.display_name
+        FROM observer_races r
+        LEFT JOIN users u ON u.telegram_id = r.telegram_id
+        WHERE r.telegram_id = ?
+      `).get(targetId);
+
+      if (!row) {
+        await ctx.reply("برای این شناسه هنوز نژادی ثبت نشده است.");
+        return;
+      }
+
+      await ctx.reply(
+        `🔒 اطلاعات محرمانهٔ نژاد\n` +
+        `شناسه: ${row.telegram_id}\n` +
+        `نام: ${row.display_name || "ثبت نشده"}\n` +
+        `نام کاربری: ${row.username ? "@" + row.username : "ندارد"}\n` +
+        `نژاد: ${row.race}\n` +
+        `آخرین ثبت: ${row.updated_at}`
+      );
+      return;
+    }
+
+    const rows = db.prepare(`
+      SELECT r.telegram_id, r.race, u.username, u.display_name
+      FROM observer_races r
+      LEFT JOIN users u ON u.telegram_id = r.telegram_id
+      ORDER BY r.updated_at DESC
+      LIMIT 50
+    `).all();
+
+    if (!rows.length) {
+      await ctx.reply("هنوز نژادی ثبت نشده است.\nبرای مشاهدهٔ یک نفر: /rpraces شناسه");
+      return;
+    }
+
+    const output = rows.map(row =>
+      `• ${row.display_name || "بدون نام"} | شناسه: ${row.telegram_id}` +
+      ` | ${row.username ? "@" + row.username + " | " : ""}${row.race}`
+    );
+
+    await ctx.reply(
+      "🔒 فهرست محرمانهٔ نژادها (حداکثر ۵۰ مورد):\n\n" +
+      output.join("\n") +
+      "\n\nمشاهدهٔ یک نفر: /rpraces شناسه"
+    );
+  });
+
+  // تعیین یا تغییر نژاد فقط برای مالک و فقط از پی‌وی
+  bot.command("rpraceset", async ctx => {
+    if (ctx.chat.type !== "private") {
+      await ctx.reply("🔒 این دستور را در پی‌وی ربات اجرا کن.");
+      return;
+    }
+
+    if (!isOwner(ctx)) {
+      await ctx.reply("⛔ فقط مالک می‌تواند نژاد را تعیین یا تغییر دهد.");
+      return;
+    }
+
+    const args = String(ctx.match || "").trim().split(/\s+/);
+    const targetId = Number(args.shift());
+    const rawRace = args.join(" ").trim();
+    const race = raceAliases[rawRace.toLowerCase()] || raceAliases[rawRace];
+
+    if (!Number.isSafeInteger(targetId) || targetId <= 0 || !race) {
+      await ctx.reply(
+        "روش استفاده:\n/rpraceset شناسه نژاد\n\n" +
+        "نژادهای مجاز:\n" +
+        "انسان، خون‌آشام، گرگینه، تغییرشکل‌دهنده\n\n" +
+        "نمونه:\n/rpraceset 123456789 خون‌آشام"
+      );
+      return;
+    }
+
+    const target = db.prepare(
+      "SELECT telegram_id FROM users WHERE telegram_id = ?"
+    ).get(targetId);
+
+    if (!target) {
+      await ctx.reply("این شناسه در دیتابیس کاربران پیدا نشد.");
+      return;
+    }
+
+    const currentTime = now();
+
+    db.prepare(`
+      INSERT INTO observer_races
+        (telegram_id, race, assigned_by, updated_at, last_blood_reminder_at)
+      VALUES (?, ?, ?, ?, 0)
+      ON CONFLICT(telegram_id) DO UPDATE SET
+        race = excluded.race,
+        assigned_by = excluded.assigned_by,
+        updated_at = excluded.updated_at,
+        last_blood_reminder_at = 0
+    `).run(targetId, race, ctx.from.id, currentTime);
+
+    if (race === "خون‌آشام") {
+      db.prepare(`
+        INSERT OR IGNORE INTO observer_needs
+          (telegram_id, last_blood_at, updated_at)
+        VALUES (?, ?, ?)
+      `).run(targetId, currentTime, currentTime);
+
+      db.prepare(`
+        UPDATE observer_needs
+        SET last_blood_at = ?, updated_at = ?
+        WHERE telegram_id = ?
+      `).run(currentTime, currentTime, targetId);
+    }
+
+    await report(
+      ctx.api,
+      `🔐 تغییر نژاد | شناسه: ${targetId} | نژاد: ${race} | مالک: ${ctx.from.id}`
+    );
+
+    await ctx.reply(
+      `✅ نژاد کاربر ${targetId} ثبت شد: ${race}\n` +
+      (race === "خون‌آشام"
+        ? "🩸 شمارش یادآوری خصوصی خون از همین لحظه آغاز شد."
+        : "اطلاعات نژاد برای کاربران عادی نمایش داده نمی‌شود.")
+    );
+  });
+
+  // یادآوری خون‌آشام‌ها هر ۱۲ ساعت؛ پیام فقط در پی‌وی خود شخص
+  const checkVampireBloodReminders = async () => {
+    const currentTime = now();
+    const twelveHoursAgo = currentTime - 12 * 60 * 60;
+
+    const dueUsers = db.prepare(`
+      SELECT r.telegram_id,
+             COALESCE(n.last_blood_at, r.updated_at) AS last_blood_at
+      FROM observer_races r
+      LEFT JOIN observer_needs n ON n.telegram_id = r.telegram_id
+      WHERE r.race = 'خون‌آشام'
+        AND COALESCE(n.last_blood_at, r.updated_at) <= ?
+        AND COALESCE(r.last_blood_reminder_at, 0) <= ?
+    `).all(twelveHoursAgo, twelveHoursAgo);
+
+    for (const person of dueUsers) {
+      let sent = false;
+      try {
+        await bot.api.sendMessage(
+          person.telegram_id,
+          "🩸 یادآوری مونتادوریا\n\n" +
+          "زمان نوشیدن خون رسیده است. پس از انجام آن، در گروه نقش‌آفرینی هشتگ #خون را ثبت کن.\n" +
+          "این پیام خصوصی است؛ برای ثبت وضعیت، هشتگ را در پی‌وی ربات نفرست."
+        );
+        sent = true;
+      } catch (error) {
+        console.error("ارسال یادآوری خون ناموفق بود:", person.telegram_id, error);
+        await report(
+          bot.api,
+          `⚠️ ارسال پی‌وی یادآوری خون ناموفق بود | شناسه: ${person.telegram_id} | ممکن است کاربر هنوز ربات را /start نکرده باشد.`
+        );
+      }
+
+      db.prepare(`
+        UPDATE observer_races
+        SET last_blood_reminder_at = ?
+        WHERE telegram_id = ? AND race = 'خون‌آشام'
+      `).run(currentTime, person.telegram_id);
+
+      if (sent) {
+        await report(
+          bot.api,
+          `🩸 یادآوری خصوصی خون ارسال شد | شناسه: ${person.telegram_id}`
+        );
+      }
+    }
+  };
+
+  const vampireReminderTimer = setInterval(() => {
+    checkVampireBloodReminders().catch(error =>
+      console.error("خطا در یادآوری خون‌آشام‌ها:", error)
+    );
+  }, 60_000);
+  vampireReminderTimer.unref?.();
+  checkVampireBloodReminders().catch(console.error);
+
+  const restoreTimer = setInterval(() => {
+    restoreExpiredRestrictions(bot).catch(error =>
+      console.error("Restriction restore error:", error)
+    );
+  }, 60_000);
+  restoreTimer.unref?.();
+  restoreExpiredRestrictions(bot).catch(console.error);
+
+  // گروه‌ها فقط با دستور مالک ثبت می‌شوند.
+  bot.command("rpadd", async ctx => {
+    if (!isOwner(ctx)) {
+      return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
+    }
+
+    if (!isGroup(ctx.chat)) {
+      return ctx.reply("این دستور را داخل گروه موردنظر اجرا کن.");
+    }
+
+    db.prepare(`
+      INSERT INTO rp_groups (chat_id, title, active, added_by, created_at)
+      VALUES (?, ?, 1, ?, ?)
+      ON CONFLICT(chat_id) DO UPDATE SET
+        title = excluded.title,
+        active = 1,
+        added_by = excluded.added_by
+    `).run(
+      ctx.chat.id,
+      ctx.chat.title || "",
+      ctx.from.id,
+      now()
+    );
+
+    audit(ctx.from.id, "rp_group_add", `${ctx.chat.id}`);
+
+    await ctx.reply("✅ این گروه به فهرست گروه‌های مجاز نقش‌آفرینی اضافه شد.");
+    await report(
+      ctx.api,
+      `➕ گروه نقش‌آفرینی ثبت شد:\n${escapeHtml(ctx.chat.title || "")}\n` +
+      `شناسه: <code>${ctx.chat.id}</code>`
+    );
+  });
+
+  bot.command("rpremove", async ctx => {
+    if (!isOwner(ctx)) {
+      return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
+    }
+
+    if (!isGroup(ctx.chat)) {
+      return ctx.reply("این دستور را داخل گروه موردنظر اجرا کن.");
+    }
+
+    db.prepare(`
+      UPDATE rp_groups SET active = 0 WHERE chat_id = ?
+    `).run(ctx.chat.id);
+
+    audit(ctx.from.id, "rp_group_remove", `${ctx.chat.id}`);
+
+    await ctx.reply("گروه از فهرست نظارت خارج شد.");
+    await report(
+      ctx.api,
+      `➖ گروه از نظارت خارج شد: <code>${ctx.chat.id}</code>`
+    );
+  });
+
+  bot.command("rpgroups", async ctx => {
+    if (!isOwner(ctx)) {
+      return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
+    }
+
+    const groups = db.prepare(`
+      SELECT chat_id, title FROM rp_groups WHERE active = 1 ORDER BY title
+    `).all();
+
+    if (!groups.length) {
+      return ctx.reply("هنوز هیچ گروهی برای نظارت ثبت نشده است.");
+    }
+
+    const output = groups.map((group, index) =>
+      `${index + 1}. ${escapeHtml(group.title || "بدون عنوان")}\n` +
+      `<code>${group.chat_id}</code>`
+    ).join("\n\n");
+
+    await ctx.reply(`📋 <b>گروه‌های تحت نظارت</b>\n\n${output}`, {
+      parse_mode: "HTML"
+    });
+  });
+
+  // پاک‌کردن اخطارهای فعال یک کاربر: /rpclear ID
+  bot.command("rpclear", async ctx => {
+    if (!isOwner(ctx)) {
+      return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
+    }
+
+    const targetId = Number((ctx.match || "").trim());
+
+    if (!Number.isSafeInteger(targetId) || targetId <= 0) {
+      return ctx.reply("روش استفاده: /rpclear شناسه_تلگرام");
+    }
+
+    const result = db.prepare(`
+      UPDATE observer_warnings
+      SET active = 0, cleared_at = ?
+      WHERE telegram_id = ? AND active = 1
+    `).run(now(), targetId);
+
+    audit(ctx.from.id, "warnings_cleared",
+      `telegram_id=${targetId};count=${result.changes}`);
+
+    await report(
+      ctx.api,
+      `🧾 <b>پاک‌سازی اخطارها</b>\n` +
+      `کاربر: <code>${targetId}</code>\n` +
+      `اخطارهای پاک‌شده: ${result.changes}\n` +
+      `مدیر: <code>${ctx.from.id}</code>`
+    );
+
+    return ctx.reply(
+      `✅ اخطارهای فعال کاربر ${targetId} پاک شد. تعداد: ${result.changes}`
+    );
+  });
+
+
+  // نمایش اخطارهای فعال یک کاربر: /rpwarnings ID
+  bot.command("rpwarnings", async ctx => {
+    if (!isOwner(ctx)) {
+      return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
+    }
+
+    const targetId = Number((ctx.match || "").trim());
+
+    if (!Number.isSafeInteger(targetId) || targetId <= 0) {
+      return ctx.reply("روش استفاده: /rpwarnings شناسه_تلگرام");
+    }
+
+    const rows = db.prepare(`
+      SELECT id, chat_id, reason, created_at
+      FROM observer_warnings
+      WHERE telegram_id = ? AND active = 1
+      ORDER BY id DESC
+      LIMIT 20
+    `).all(targetId);
+
+    if (!rows.length) {
+      return ctx.reply(`✅ کاربر ${targetId} اخطار فعالی ندارد.`);
+    }
+
+    const output = rows.map((row, index) =>
+      `${index + 1}. اخطار #${row.id}\n` +
+      `گروه: ${row.chat_id}\n` +
+      `علت: ${escapeHtml(row.reason)}\n` +
+      `زمان: ${row.created_at}`
+    ).join("\n\n");
+
+    return ctx.reply(
+      `📋 اخطارهای فعال کاربر ${targetId}\n` +
+      `تعداد فعال: ${getActiveWarnings(targetId)}\n\n${output}`
+    );
+  });
+
+
+  // پنل اولیه تنظیمات ناظر
+  bot.command("rpsettings", async ctx => {
+    if (!isOwner(ctx)) {
+      return ctx.reply("⛔ دسترسی فقط برای مالک ربات مجاز است.");
+    }
+
+    const groups = db.prepare(`
+      SELECT chat_id, title
+      FROM rp_groups
+      WHERE active = 1
+      ORDER BY title
+    `).all();
+
+    const groupList = groups.length
+      ? groups.map((g, i) =>
+          `${i + 1}. ${escapeHtml(g.title || "بدون نام")} — <code>${g.chat_id}</code>`
+        ).join("\n")
+      : "هیچ گروهی ثبت نشده است.";
+
+    const activeWarnings = db.prepare(`
+      SELECT COUNT(*) AS total
+      FROM observer_warnings
+      WHERE active = 1
+    `).get().total;
+
+    return ctx.reply(
+      `⚙️ <b>تنظیمات ناظر مونتادوریا</b>\n\n` +
+      `حد اخطار: ${WARNING_LIMIT}\n` +
+      `مدت محدودیت: ${RESTRICTION_MINUTES} دقیقه\n` +
+      `گروه گزارش: ${OBSERVER_GROUP_ID ?? "تنظیم نشده"}\n` +
+      `گروه‌های فعال: ${groups.length}\n` +
+      `اخطارهای فعال: ${activeWarnings}\n\n` +
+      `<b>گروه‌های ثبت‌شده:</b>\n${groupList}\n\n` +
+      `دستورات مدیریت:\n` +
+      `/rpadd — ثبت گروه فعلی\n` +
+      `/rpremove — غیرفعال‌کردن گروه فعلی\n` +
+      `/rpgroups — فهرست گروه‌ها\n` +
+      `/rpwarnings شناسه — مشاهده اخطارها\n` +
+      `/rpclear شناسه — پاک‌کردن اخطارها\n` +
+      `/rpstatus — وضعیت کلی`,
+      { parse_mode: "HTML" }
+    );
+  });
+
+  bot.command("rpstatus", async ctx => {
+    if (!isOwner(ctx)) {
+      return ctx.reply("⛔ این دستور فقط برای مالک ربات است.");
+    }
+
+    const groups = db.prepare(`
+      SELECT COUNT(*) AS total FROM rp_groups WHERE active = 1
+    `).get().total;
+
+    const warnings = db.prepare(`
+      SELECT COUNT(*) AS total
+      FROM observer_warnings WHERE active = 1
+    `).get().total;
+
+    await ctx.reply(
+      `📊 وضعیت ناظر مونتادوریا\n` +
+      `گروه‌های فعال: ${groups}\n` +
+      `اخطارهای فعال: ${warnings}\n` +
+      `حد اخطار: ${WARNING_LIMIT}\n` +
+      `گروه گزارش: ${OBSERVER_GROUP_ID ?? "تنظیم نشده"}`
+    );
+  });
+
+  // بررسی تغییر یوزرنیم اعضا
+  bot.on("message", async ctx => {
+    if (!isGroup(ctx.chat) || !ctx.from || ctx.from.is_bot) return;
+    if (!isRegistered(ctx.chat.id)) return;
+
+    const user = ctx.from;
+    const existing = db.prepare(`
+      SELECT username FROM users WHERE telegram_id = ?
+    `).get(user.id);
+
+    const newUsername = user.username || null;
+
+    if (existing && (existing.username || null) !== newUsername) {
+      db.prepare(`
+        INSERT INTO observer_username_history
+          (telegram_id, old_username, new_username, changed_at)
+        VALUES (?, ?, ?, ?)
+      `).run(
+        user.id,
+        existing.username || null,
+        newUsername,
+        now()
+      );
+
+      await report(
+        ctx.api,
+        `🔄 <b>تغییر یوزرنیم</b>\n` +
+        `کاربر: <code>${user.id}</code>\n` +
+        `قبلی: ${escapeHtml(existing.username || "نداشت")}\n` +
+        `جدید: ${escapeHtml(newUsername || "ندارد")}\n` +
+        `گروه: ${escapeHtml(ctx.chat.title || String(ctx.chat.id))}`
+      );
+
+      db.prepare(`
+        UPDATE users
+        SET username = ?, updated_at = ?
+        WHERE telegram_id = ?
+      `).run(newUsername, now(), user.id);
+    }
+
+    // درخواست پنل با پیام ساده role
+    if ((ctx.msg.text || "").trim().toLowerCase() === "role") {
+      const dbUser = db.prepare(`
+        SELECT display_name, job, money, bank, xp, level, role
+        FROM users WHERE telegram_id = ?
+      `).get(user.id);
+
+      if (!dbUser) {
+        return ctx.reply("ابتدا در سیستم مونتادوریا ثبت‌نام کن.");
+      }
+
+      const identity = db.prepare(`
+        SELECT character_code, character_name, approved, photo_file_id
+        FROM observer_identity
+        WHERE telegram_id = ?
+      `).get(user.id);
+
+      const identityText =
+        `🪪 <b>پروندهٔ نقش‌آفرینی</b>\n\n` +
+        (identity?.approved
+          ? `کد شخصیت: ${escapeHtml(identity.character_code || "ثبت نشده")}\nنام شخصیت: ${escapeHtml(identity.character_name || "ثبت نشده")}\n\n`
+          : "هویت شخصیت هنوز تأیید نشده است.\n\n") +
+        `نام: ${escapeHtml(dbUser.display_name)}\n` +
+        `شناسه تلگرام: <code>${user.id}</code>\n` +
+        `شغل: ${escapeHtml(dbUser.job || "بدون شغل")}\n` +
+        `پول: ${dbUser.money}\n` +
+        `بانک: ${dbUser.bank}\n` +
+        `تجربه: ${dbUser.xp}\n` +
+        `سطح: ${dbUser.level}\n` +
+        `نقش سامانه: ${escapeHtml(dbUser.role)}\n\n` +
+        `اطلاعات نژاد در این پنل نمایش داده نمی‌شود.`;
+
+      if (identity?.approved && identity.photo_file_id) {
+        try {
+          return await ctx.replyWithPhoto(identity.photo_file_id, {
+            caption: identityText,
+            parse_mode: "HTML"
+          });
+        } catch (error) {
+          console.error("Identity card photo failed:", error.message);
+        }
+      }
+
+      return ctx.reply(identityText, { parse_mode: "HTML" });
+    }
+
+    const text = ctx.msg.text;
+    if (!text || text.startsWith("/")) return;
+
+    // محدودیت فعالیت هنگام خواب
+    const currentSleep = db.prepare(`
+      SELECT sleep_until
+      FROM observer_needs
+      WHERE telegram_id = ?
+    `).get(user.id);
+
+    const currentUnixTime = Math.floor(Date.now() / 1000);
+    const exactExitCommand = (ctx.msg.text || "").trim() === "#خروج";
+
+    if (
+      currentSleep &&
+      Number(currentSleep.sleep_until || 0) > currentUnixTime &&
+      !exactExitCommand
+    ) {
+      try {
+        await ctx.api.deleteMessage(ctx.chat.id, ctx.msg.message_id);
+
+        await report(
+          ctx.api,
+          `🌙 فعالیت هنگام خواب | کاربر: ${user.id} | گروه: ${ctx.chat.id} | پیام حذف شد`
+        );
+      } catch (error) {
+        console.error("Sleep message deletion failed:", error.message);
+
+        await report(
+          ctx.api,
+          `⚠️ حذف پیام هنگام خواب ناموفق بود | کاربر: ${user.id} | گروه: ${ctx.chat.id} | ${error.message}`
+        );
+      }
+
+      return;
+    }
+
+
+    // فرمان‌های هشتگی مجاز باید مستقل یا در خطوط جداگانه باشند.
+    // مدیریت ورود و خروج مپ
+
+    // MONTADORIA_BLOOD_TAG_V1
+    const hasBloodTag = text.split(/\r?\n/).some(
+      line => line.trim().split(/\s+/)[0] === "#خون"
+    );
+    if (hasBloodTag) {
+      const bloodTime = now();
+      db.prepare(`
+        INSERT OR IGNORE INTO observer_needs
+          (telegram_id, last_blood_at, updated_at)
+        VALUES (?, ?, ?)
+      `).run(user.id, bloodTime, bloodTime);
+      db.prepare(`
+        UPDATE observer_needs
+        SET last_blood_at = ?, updated_at = ?
+        WHERE telegram_id = ?
+      `).run(bloodTime, bloodTime, user.id);
+
+      db.prepare(`
+        UPDATE observer_races
+        SET last_blood_reminder_at = 0
+        WHERE telegram_id = ? AND race = 'خون‌آشام'
+      `).run(user.id);
+
+      await report(
+        ctx.api,
+        `🩸 ثبت نوشیدن خون | کاربر: ${user.id} | گروه: ${ctx.chat.id}`
+      );
+    }
+
+    const hasMapTag = tag => text.split(/\r?\n/).some(
+      line => line.trim().split(/\s+/)[0] === tag
+    );
+
+    if (hasMapTag("#ورود")) {
+      const activeMap = db.prepare(`
+        SELECT chat_id FROM observer_active_map
+        WHERE telegram_id = ?
+      `).get(user.id);
+
+      if (activeMap && Number(activeMap.chat_id) !== Number(ctx.chat.id)) {
+        await ctx.reply(
+          "⛔ هنوز از مپ قبلی خارج نشده‌ای. ابتدا در همان مپ #خروج بزن."
+        );
+        return;
+      }
+
+      if (!activeMap) {
+        db.prepare(`
+          INSERT INTO observer_active_map
+            (telegram_id, chat_id, entered_at, username)
+          VALUES (?, ?, ?, ?)
+        `).run(user.id, ctx.chat.id, now(), user.username || null);
+
+        await report(
+          ctx.api,
+          `🚪 ورود به مپ | کاربر: ${user.id} | گروه: ${ctx.chat.id}`
+        );
+      }
+    }
+
+    if (hasMapTag("#خروج")) {
+      const activeMap = db.prepare(`
+        SELECT chat_id FROM observer_active_map
+        WHERE telegram_id = ?
+      `).get(user.id);
+
+      if (!activeMap || Number(activeMap.chat_id) !== Number(ctx.chat.id)) {
+        await ctx.reply(
+          "⛔ در این مپ حضور فعالی برای تو ثبت نشده است."
+        );
+        return;
+      }
+
+      db.prepare(`
+        DELETE FROM observer_active_map
+        WHERE telegram_id = ? AND chat_id = ?
+      `).run(user.id, ctx.chat.id);
+
+      await report(
+        ctx.api,
+        `🚪 خروج از مپ | کاربر: ${user.id} | گروه: ${ctx.chat.id}`
+      );
+    }
+
+    // کنترل مپ فعال برای ثبت نیازها
+    const needActionRequested = text.split(/\r?\n/).some(line => {
+      const tag = line.trim().split(/\s+/)[0];
+      return ["#خوردن", "#خوابیدن", "#خواب"].includes(tag);
+    });
+
+    if (needActionRequested) {
+      const activeNeedMap = db.prepare(`
+        SELECT chat_id
+        FROM observer_active_map
+        WHERE telegram_id = ?
+      `).get(user.id);
+
+      if (
+        !activeNeedMap ||
+        Number(activeNeedMap.chat_id) !== Number(ctx.chat.id)
+      ) {
+        await ctx.reply(
+          "⛔ ثبت غذا و خواب فقط در مپی مجاز است که با #ورود در آن حضور داری."
+        );
+        return;
+      }
+    }
+
+    // ثبت خودکار رویدادهای غذا و خواب
+    const hasNeedTag = tag => text.split(/\r?\n/).some(
+      line => line.trim().split(/\s+/)[0] === tag
+    );
+
+    if (hasNeedTag("#خوردن")) {
+      updateNeed(user.id, "food");
+      await report(
+        ctx.api,
+        `🍽️ ثبت غذا | کاربر: ${user.id} | گروه: ${ctx.chat.id}`
+      );
+    }
+
+    if (hasNeedTag("#خوابیدن") || hasNeedTag("#خواب")) {
+      ensureNeeds(user.id);
+
+      const currentTime = now();
+      const sleepHours = Math.max(
+        1,
+        Number(process.env.SLEEP_DURATION_HOURS || 6)
+      );
+
+      db.prepare(`
+        UPDATE observer_needs
+        SET last_sleep_at = ?, sleep_until = ?, updated_at = ?
+        WHERE telegram_id = ?
+      `).run(
+        currentTime,
+        currentTime + sleepHours * 3600,
+        currentTime,
+        user.id
+      );
+
+      await report(
+        ctx.api,
+        `🌙 ثبت خواب | کاربر: ${user.id} | مدت: ${sleepHours} ساعت | گروه: ${ctx.chat.id}`
+      );
+    }
+
+    const validation = validateRoleplay(text);
+
+    if (!validation.ok) {
+      await warn(ctx, validation.reason);
+    }
+  });
+}

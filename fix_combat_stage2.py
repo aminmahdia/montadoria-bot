@@ -1,0 +1,346 @@
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import time
+
+p = Path("src/combat.js")
+s = p.read_text(encoding="utf-8")
+original = s
+
+def need(condition, message):
+    if not condition:
+        raise SystemExit("⛔ " + message)
+
+def once(old, new, label):
+    global s
+    count = s.count(old)
+    need(count == 1, f"محل تغییر «{label}» دقیقاً یک‌بار پیدا نشد؛ فایل تغییر نکرد.")
+    s = s.replace(old, new, 1)
+
+# این مرحله فقط روی نسخه‌ای اجرا می‌شود که تابع resolveRound دارد.
+need("function resolveRound(fresh, now)" in s,
+     "تابع resolveRound پیدا نشد. ابتدا اصلاحات مرحله اول را بررسی کن.")
+
+# 1) ستون‌های انرژی پایدار در دیتابیس
+once(
+    'ensureColumn("combat_duels", "timeout_stage", "INTEGER NOT NULL DEFAULT 0");',
+    '''ensureColumn("combat_duels", "timeout_stage", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("combat_duels", "energy_a", "INTEGER NOT NULL DEFAULT 100");
+ensureColumn("combat_duels", "energy_b", "INTEGER NOT NULL DEFAULT 100");''',
+    "ستون‌های انرژی"
+)
+
+# 2) توابع هزینه و بازیابی انرژی
+energy_helpers = r'''
+function energyCost(action) {
+  if (action.kind === "pass") return 0;
+  if (action.kind === "defense") return 8;
+  if (action.kind === "dodge") return 10;
+  if (action.style === "heavy") return 35;
+  if (action.style === "quick") return 22;
+  return 12;
+}
+
+function prepareActionForEnergy(action, energy) {
+  const available = Math.max(0, Number(energy || 0));
+
+  if (
+    action.kind === "attack" &&
+    action.style === "heavy" &&
+    available < 35
+  ) {
+    return {
+      ...action,
+      style: "normal",
+      text: action.text + " (به‌دلیل انرژی کم، حرکت عادی اجرا شد)"
+    };
+  }
+
+  if (
+    action.kind === "attack" &&
+    action.style === "quick" &&
+    available < 22
+  ) {
+    return {
+      ...action,
+      style: "normal",
+      text: action.text + " (به‌دلیل انرژی کم، حرکت عادی اجرا شد)"
+    };
+  }
+
+  return action;
+}
+
+function nextEnergy(current, action) {
+  const value = Math.max(0, Math.min(100, Number(current ?? 100)));
+  const cost = Math.min(value, energyCost(action));
+  return Math.min(100, Math.max(0, value - cost) + 10);
+}
+
+function energyBar(value) {
+  const amount = Math.max(0, Math.min(100, Number(value || 0)));
+  const filled = Math.round(amount / 10);
+  return "🟦".repeat(filled) + "⬛".repeat(10 - filled);
+}
+
+'''
+once(
+    "function resolveRound(fresh, now) {",
+    energy_helpers + "function resolveRound(fresh, now) {",
+    "توابع انرژی"
+)
+
+# 3) خواندن انرژی و تطبیق حرکت با انرژی موجود
+once(
+    '''  const actionA = readAction(fresh.action_a);
+  const actionB = readAction(fresh.action_b);
+  const weaponA = getWeapon(fresh.challenger_id);''',
+    '''  const energyAStart = Math.max(0, Math.min(100, Number(fresh.energy_a ?? 100)));
+  const energyBStart = Math.max(0, Math.min(100, Number(fresh.energy_b ?? 100)));
+
+  const actionA = prepareActionForEnergy(
+    readAction(fresh.action_a),
+    energyAStart
+  );
+  const actionB = prepareActionForEnergy(
+    readAction(fresh.action_b),
+    energyBStart
+  );
+
+  const energyA = nextEnergy(energyAStart, actionA);
+  const energyB = nextEnergy(energyBStart, actionB);
+
+  const weaponA = getWeapon(fresh.challenger_id);''',
+    "محاسبه انرژی دور"
+)
+
+# 4) ذخیره انرژی همراه HP
+once(
+    '''    SET hp_a=?,
+        hp_b=?,
+        turn=turn+1,''',
+    '''    SET hp_a=?,
+        hp_b=?,
+        energy_a=?,
+        energy_b=?,
+        turn=turn+1,''',
+    "ذخیره انرژی در SQL"
+)
+
+once(
+    '''    hpA,
+    hpB,
+    done ? (winner ? "finished" : "draw") : "active",''',
+    '''    hpA,
+    hpB,
+    energyA,
+    energyB,
+    done ? (winner ? "finished" : "draw") : "active",''',
+    "پارامترهای ذخیره انرژی"
+)
+
+once(
+    '''    hpA,
+    hpB,
+    done,
+    winner''',
+    '''    hpA,
+    hpB,
+    energyA,
+    energyB,
+    done,
+    winner''',
+    "خروجی نتیجه دور"
+)
+
+# 5) نمایش HP و انرژی در پنل مبارزه
+once(
+    '''🥀 ${playerName(duel.challenger_id)}: ${duel.hp_a} HP
+🛡 ${playerName(duel.opponent_id)}: ${duel.hp_b} HP
+
+دور: ${duel.turn} از ${MAX_ROUNDS}''',
+    '''🥀 ${playerName(duel.challenger_id)}: ${duel.hp_a} HP
+${energyBar(duel.energy_a)} انرژی: ${duel.energy_a ?? 100}/100
+
+🛡 ${playerName(duel.opponent_id)}: ${duel.hp_b} HP
+${energyBar(duel.energy_b)} انرژی: ${duel.energy_b ?? 100}/100
+
+دور: ${duel.turn} از ${MAX_ROUNDS}''',
+    "نمایش انرژی پنل"
+)
+
+once(
+    '''❤️ ${playerName(result.challenger)}: ${result.hpA} HP
+❤️ ${playerName(result.opponent)}: ${result.hpB} HP`;''',
+    '''❤️ ${playerName(result.challenger)}: ${result.hpA} HP
+${energyBar(result.energyA)} انرژی: ${result.energyA}/100
+
+❤️ ${playerName(result.opponent)}: ${result.hpB} HP
+${energyBar(result.energyB)} انرژی: ${result.energyB}/100`;''',
+    "نمایش انرژی نتیجه"
+)
+
+# 6) پنل دسته‌بندی سلاح‌ها
+arsenal_code = r'''
+const WEAPON_KIND_ORDER = [
+  "شمشیر", "خنجر", "تبر", "گرز", "نیزه",
+  "کمان", "پرتابی", "زنجیری", "رزمی", "سپر"
+];
+
+function getWeaponKinds() {
+  const kinds = db.prepare(`
+    SELECT DISTINCT kind
+    FROM combat_weapons
+    WHERE approved=1
+  `).all().map(row => row.kind);
+
+  return kinds.sort((a, b) => {
+    const ai = WEAPON_KIND_ORDER.indexOf(a);
+    const bi = WEAPON_KIND_ORDER.indexOf(b);
+    const av = ai < 0 ? 999 : ai;
+    const bv = bi < 0 ? 999 : bi;
+    return av - bv || a.localeCompare(b, "fa");
+  });
+}
+
+function arsenalKeyboard(page, totalPages) {
+  const previous = Math.max(0, page - 1);
+  const next = Math.min(totalPages - 1, page + 1);
+
+  return {
+    inline_keyboard: [[
+      {
+        text: "صفحه قبل",
+        callback_data: `combat_weapons:${previous}`
+      },
+      {
+        text: "صفحه بعد",
+        callback_data: `combat_weapons:${next}`
+      }
+    ]]
+  };
+}
+
+function arsenalContent(page) {
+  const kinds = getWeaponKinds();
+  const totalPages = Math.max(1, kinds.length);
+  const current = Math.max(0, Math.min(totalPages - 1, page));
+  const kind = kinds[current];
+
+  if (!kind) {
+    return {
+      page: 0,
+      totalPages: 1,
+      text: "⚔️ زرادخانه خالی است.",
+      keyboard: arsenalKeyboard(0, 1)
+    };
+  }
+
+  const weapons = db.prepare(`
+    SELECT id,name,kind,damage,speed,reach
+    FROM combat_weapons
+    WHERE approved=1 AND kind=?
+    ORDER BY damage DESC, speed DESC, name
+  `).all(kind);
+
+  const lines = weapons.map(w =>
+    `${w.id}. ${w.name}
+آسیب: ${w.damage} | سرعت: ${w.speed} | برد: ${w.reach}`
+  );
+
+  const text = `⚔️ زرادخانه مونتادوریا
+
+دسته: ${kind}
+صفحه ${current + 1} از ${totalPages}
+تعداد سلاح‌ها: ${weapons.length}
+
+${lines.join("\n\n")}
+
+برای انتخاب سلاح:
+#انتخاب_سلاح شماره`;
+
+  return {
+    page: current,
+    totalPages,
+    text,
+    keyboard: arsenalKeyboard(current, totalPages)
+  };
+}
+
+async function showArsenal(ctx, page, edit = false) {
+  const result = arsenalContent(page);
+
+  if (edit) {
+    await ctx.editMessageText(result.text, {
+      reply_markup: result.keyboard
+    });
+  } else {
+    await ctx.reply(result.text, {
+      reply_markup: result.keyboard
+    });
+  }
+}
+
+'''
+
+once(
+    "export function registerCombat(bot) {",
+    arsenal_code + "export function registerCombat(bot) {",
+    "توابع پنل زرادخانه"
+)
+
+# جایگزینی handler قدیمی #سلاح‌ها
+pattern = re.compile(
+    r'  bot\.hears\(/\^#سلاح‌ها.*?\n  \}\);\n\n  bot\.hears\(/\^#انتخاب_سلاح',
+    re.S
+)
+matches = list(pattern.finditer(s))
+need(len(matches) == 1,
+     "handler قدیمی سلاح‌ها دقیقاً یک‌بار پیدا نشد؛ فایل تغییر نکرد.")
+
+replacement = '''  bot.hears(/^#سلاح‌ها(?:\\\\s+([0-9]+))?$/u, async ctx => {
+    const requested = Math.max(1, Number(ctx.match[1] || 1));
+    await showArsenal(ctx, requested - 1, false);
+  });
+
+  bot.callbackQuery(/^combat_weapons:([0-9]+)$/u, async ctx => {
+    const page = Number(ctx.match[1]);
+    try {
+      await showArsenal(ctx, page, true);
+      await ctx.answerCallbackQuery();
+    } catch (error) {
+      console.error("Combat arsenal page error:", error);
+      await ctx.answerCallbackQuery({
+        text: "خطا در باز کردن صفحه سلاح‌ها",
+        show_alert: true
+      });
+    }
+  });
+
+  bot.hears(/^#انتخاب_سلاح'''
+
+s = s[:matches[0].start()] + replacement + s[matches[0].end():]
+
+# کنترل اینکه handler قدیمی دوباره باقی نمانده باشد
+need(s.count('bot.hears(/^#سلاح‌ها') == 1,
+     "تعداد handlerهای #سلاح‌ها غیرمنتظره است.")
+
+# نسخه پشتیبان و ذخیره امن
+backup = p.with_name(f"combat.js.before_stage2_{int(time.time())}")
+backup.write_text(original, encoding="utf-8")
+p.write_text(s, encoding="utf-8")
+
+check = subprocess.run(["node", "--check", str(p)], text=True)
+if check.returncode != 0:
+    p.write_text(original, encoding="utf-8")
+    raise SystemExit("⛔ بررسی نحوی ناموفق بود؛ فایل اصلی بازگردانده شد.")
+
+print("✅ انرژی مستقل هر مبارز به دیتابیس اضافه شد.")
+print("✅ مصرف و بازیابی انرژی به محاسبه دور متصل شد.")
+print("✅ کمبود انرژی مانع ثبت حرکت نمی‌شود.")
+print("✅ پنل سلاح‌ها دسته‌بندی و صفحه‌بندی شد.")
+print("✅ دکمه‌های صفحه قبل و صفحه بعد اضافه شدند.")
+print("✅ node --check موفق بود.")
+print(f"نسخه پشتیبان: {backup}")
+print("⚠️ هنوز آزمون عملی تلگرام و دیتابیس انجام نشده است.")

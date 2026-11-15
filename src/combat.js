@@ -194,19 +194,17 @@ function playerName(id) {
     (user?.username ? "@" + user.username : "بازیکن " + id);
 }
 
+// MONTADORIA_COMBAT_OWNERSHIP_V1
 function getWeapon(id) {
   return db.prepare(`
-    SELECT w.*
+    SELECT w.*, i.instance_id
     FROM combat_loadouts l
-    JOIN combat_weapons w ON w.id=l.weapon_id
+    JOIN combat_weapon_instances i
+      ON i.instance_id=l.weapon_instance_id
+     AND i.holder_id=l.telegram_id
+    JOIN combat_weapons w ON w.id=i.weapon_id
     WHERE l.telegram_id=? AND w.approved=1
-  `).get(String(id)) || db.prepare(`
-    SELECT *
-    FROM combat_weapons
-    WHERE approved=1
-    ORDER BY id
-    LIMIT 1
-  `).get();
+  `).get(String(id)) || null;
 }
 
 function getTraining(id, kind) {
@@ -849,7 +847,7 @@ function arsenalContent(page) {
   }
 
   const weapons = db.prepare(`
-    SELECT id,name,kind,damage,speed,reach
+    SELECT id,name,kind,damage,speed,reach,price
     FROM combat_weapons
     WHERE approved=1 AND kind=?
     ORDER BY damage DESC, speed DESC, name
@@ -857,7 +855,8 @@ function arsenalContent(page) {
 
   const lines = weapons.map(w =>
     `${w.id}. ${w.name}
-آسیب: ${w.damage} | سرعت: ${w.speed} | برد: ${w.reach}`
+آسیب: ${w.damage} | سرعت: ${w.speed} | برد: ${w.reach}
+قیمت خرید: ${Number(w.price || 0).toLocaleString("en-US")}`
   );
 
   const text = `⚔️ زرادخانه مونتادوریا
@@ -868,8 +867,13 @@ function arsenalContent(page) {
 
 ${lines.join("\n\n")}
 
-برای انتخاب سلاح:
-#انتخاب_سلاح شماره`;
+برای خرید:
+#خرید_سلاح شناسه [تعداد]
+
+برای تجهیز نسخه خریداری‌شده:
+#انتخاب_سلاح شناسه_وسیله
+
+شناسه وسیله را از #سلاح‌های_من بردار.`;
 
   return {
     page: current,
@@ -944,38 +948,7 @@ export function registerCombat(bot) {
     }
   });
 
-  bot.hears(/^#انتخاب_سلاح\s+([0-9]+)$/u, async ctx => {
-    const uid = String(ctx.from.id);
-
-    const busy = db.prepare(`
-      SELECT 1
-      FROM combat_duels
-      WHERE status='active'
-        AND (challenger_id=? OR opponent_id=?)
-      LIMIT 1
-    `).get(uid, uid);
-
-    if (busy) {
-      return ctx.reply("⛔ هنگام مبارزه امکان تغییر سلاح وجود ندارد.");
-    }
-
-    const weapon = db.prepare(`
-      SELECT id,name
-      FROM combat_weapons
-      WHERE id=? AND approved=1
-    `).get(Number(ctx.match[1]));
-
-    if (!weapon) return ctx.reply("❌ شناسه سلاح معتبر نیست.");
-
-    db.prepare(`
-      INSERT INTO combat_loadouts(telegram_id,weapon_id)
-      VALUES(?,?)
-      ON CONFLICT(telegram_id)
-      DO UPDATE SET weapon_id=excluded.weapon_id
-    `).run(uid, weapon.id);
-
-    await ctx.reply(`⚔️ سلاح فعال تو «${weapon.name}» شد.`);
-  });
+  // انتخاب سلاح در src/combat_weapons.js با بررسی مالکیت انجام می‌شود.
 
   bot.hears(/^#افزودن_سلاح\s+(.+)\s+(\S+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)$/u, async ctx => {
     if (!manager(ctx)) return;
@@ -1043,6 +1016,18 @@ export function registerCombat(bot) {
       return ctx.reply("❌ هر دو بازیکن باید در مونتادوریا ثبت‌نام کرده باشند.");
     }
 
+    if (!getWeapon(a)) {
+      return ctx.reply(
+        `⛔ ${playerName(a)} سلاحی خریداری‌شده یا امانتی را تجهیز نکرده است.`
+      );
+    }
+
+    if (!getWeapon(b)) {
+      return ctx.reply(
+        `⛔ ${playerName(b)} هنوز سلاح معتبر و تجهیزشده ندارد.`
+      );
+    }
+
     const result = createDuel(String(ctx.chat.id), a, b);
 
     if (result.error === "busy") {
@@ -1071,6 +1056,21 @@ export function registerCombat(bot) {
 
   bot.hears(/^#پذیرش\s+([0-9]+)$/u, async ctx => {
     const id = Number(ctx.match[1]);
+    const invitation = db.prepare(`
+      SELECT challenger_id, opponent_id
+      FROM combat_duels
+      WHERE id=? AND status='pending'
+        AND opponent_id=? AND chat_id=?
+    `).get(id, String(ctx.from.id), String(ctx.chat.id));
+
+    if (invitation && !getWeapon(invitation.challenger_id)) {
+      return ctx.reply("⛔ دعوت‌کننده دیگر سلاح معتبر و تجهیزشده ندارد.");
+    }
+
+    if (invitation && !getWeapon(invitation.opponent_id)) {
+      return ctx.reply("⛔ ابتدا باید یک سلاح معتبر را تجهیز کنی.");
+    }
+
     const duel = acceptDuel(id, String(ctx.from.id), String(ctx.chat.id));
 
     if (!duel) {

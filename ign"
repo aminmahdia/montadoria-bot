@@ -1,0 +1,28 @@
+[1mdiff --git a/src/commands.js b/src/commands.js[m
+[1mindex 6429e57..f32bd71 100644[m
+[1m--- a/src/commands.js[m
+[1m+++ b/src/commands.js[m
+[36m@@ -926,10 +926,10 @@[m [mexport function registerCommands(bot) {[m
+ [m
+     // MONTADORIA_ROYAL_PROFILE_V2[m
+     const profileText = [[m
+[31m-      "༺⟡━━━━━━━━━━━━━━━━━━━━⟡༻",[m
+[31m-      "       𝕸𝕺𝕹𝕿𝕬𝕯𝕺𝕽𝕴𝕬",[m
+[31m-      "𝆹𝅥 𝆭 𝆺𝅥‌ 𝐑𝐎𝐘𝐀𝐋 𝐀𝐑𝐂𝐇𝐈𝐕𝐄𝐒 𝆹𝅥 𝆭 𝆺𝅥‌",[m
+[31m-      "༺⟡━━━━━━━━━━━━━━━━━━━━⟡༻",[m
+[32m+[m[32m      "༺⟡━━━━━━━━━━━⟡༻",[m
+[32m+[m[32m      "             𝕸𝕺𝕹𝕿𝕬𝕯𝕺𝕽𝕴𝕬",[m
+[32m+[m[32m      "      𝆹𝅥 𝆭 𝆺𝅥‌ 𝐑𝐎𝐘𝐀𝐋 𝐀𝐑𝐂𝐇𝐈𝐕𝐄𝐒 𝆹𝅥 𝆭 𝆺𝅥‌",[m
+[32m+[m[32m      "༺⟡━━━━━━━━━━━⟡༻",[m
+       "",[m
+       "❖ بایگانی رسمی شهروند ❖",[m
+       "──── ⟡ ────",[m
+[36m@@ -951,7 +951,7 @@[m [mexport function registerCommands(bot) {[m
+       `♜ جایگاه اجتماعی: ${ROLES[user.role] ?? user.role}`,[m
+       "",[m
+       "╔═══⟡༺𓃦༻⟡═══╗",[m
+[31m-      "\u00A0\u00A0\u00A0\u00A0𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀\u00A0\u00A0\u00A0\u00A0",[m
+[32m+[m[32m      "           \u00A0\u00A0𝐌𝐎𝐍𝐓𝐀𝐃𝐎𝐑𝐈𝐀\u00A0\u00A0\u00A0\u00A0",[m
+       "╚═══⟡༺𓃦༻⟡═══╝",[m
+     ].join("\n")[m
+ [m

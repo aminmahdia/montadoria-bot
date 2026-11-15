@@ -1,0 +1,325 @@
+[1mdiff --git a/src/combat.js b/src/combat.js[m
+[1mindex 643e56c..8112b1a 100644[m
+[1m--- a/src/combat.js[m
+[1m+++ b/src/combat.js[m
+[36m@@ -10,7 +10,7 @@[m [mconst TURN_SECONDS = 180;[m
+ const INVITE_SECONDS = 15 * 60;[m
+ const MAX_ACTIVE_DUELS = 100;[m
+ const MAX_ROUNDS = 10;[m
+[31m-const MAX_ACTION_LENGTH = 220;[m
+[32m+[m[32mconst MAX_ACTION_LENGTH = 250;[m
+ [m
+ const WEAPONS = [[m
+   ["شمشیر یک‌دست", "شمشیر", 22, 7, 2],[m
+[36m@@ -232,13 +232,15 @@[m [mfunction cleanExpiredInvitations() {[m
+ }[m
+ [m
+ function parseAction(raw) {[m
+[31m-  const text = String(raw || "").trim().slice(0, MAX_ACTION_LENGTH);[m
+[32m+[m[32m  const text = String(raw || "").trim();[m
+ [m
+   if (text.length < 2) return { error: "short" };[m
+ [m
+   const forbidden = /خون.?آشام|گرگ.?نما|قدرت.?نژادی|قدرت.?خون|کنترل.?خون|تغییر.?شکل|تبدیل.*(گرگ|حیوان)|نامرئی|پرواز|تله.?پاتی|بازسازی.?فوری|سرعت.?فراطبیعی|قدرت.?فراطبیعی/iu;[m
+ [m
+[32m+[m[32m  // متن کامل باید بررسی شود؛ بریدن متن قبل از این بررسی راه دورزدن فیلتر بود.[m
+   if (forbidden.test(text)) return { error: "racial" };[m
+[32m+[m[32m  if (text.length > MAX_ACTION_LENGTH) return { error: "long" };[m
+ [m
+   let kind = "attack";[m
+   let style = "normal";[m
+[36m@@ -376,14 +378,14 @@[m [mconst createDuel = db.transaction((chatId, a, b) => {[m
+   return { id: Number(info.lastInsertRowid) };[m
+ });[m
+ [m
+[31m-const acceptDuel = db.transaction((id, uid) => {[m
+[32m+[m[32mconst acceptDuel = db.transaction((id, uid, chatId) => {[m
+   cleanExpiredInvitations();[m
+ [m
+   const duel = db.prepare(`[m
+     SELECT *[m
+     FROM combat_duels[m
+[31m-    WHERE id=? AND status='pending' AND opponent_id=?[m
+[31m-  `).get(id, uid);[m
+[32m+[m[32m    WHERE id=? AND status='pending' AND opponent_id=? AND chat_id=?[m
+[32m+[m[32m  `).get(id, uid, chatId);[m
+ [m
+   if (!duel) return null;[m
+ [m
+[36m@@ -396,8 +398,8 @@[m [mconst acceptDuel = db.transaction((id, uid) => {[m
+         turn_deadline_at=?,[m
+         timeout_stage=0,[m
+         last_action_at=?[m
+[31m-    WHERE id=? AND status='pending' AND opponent_id=?[m
+[31m-  `).run(now + TURN_SECONDS, now, id, uid);[m
+[32m+[m[32m    WHERE id=? AND status='pending' AND opponent_id=? AND chat_id=?[m
+[32m+[m[32m  `).run(now + TURN_SECONDS, now, id, uid, chatId);[m
+ [m
+   if (!updated.changes) return null;[m
+ [m
+[36m@@ -406,63 +408,7 @@[m [mconst acceptDuel = db.transaction((id, uid) => {[m
+   ).get(id);[m
+ });[m
+ [m
+[31m-const submitMove = db.transaction((id, uid, move) => {[m
+[31m-  const duel = db.prepare(`[m
+[31m-    SELECT *[m
+[31m-    FROM combat_duels[m
+[31m-    WHERE id=? AND status='active'[m
+[31m-  `).get(id);[m
+[31m-[m
+[31m-  if (!duel) return { error: "invalid" };[m
+[31m-[m
+[31m-  if (![duel.challenger_id, duel.opponent_id].includes(uid)) {[m
+[31m-    return { error: "invalid" };[m
+[31m-  }[m
+[31m-[m
+[31m-  if (String(duel.turn_owner_id) !== uid) {[m
+[31m-    return { error: "not_turn", owner: duel.turn_owner_id };[m
+[31m-  }[m
+[31m-[m
+[31m-  const now = Math.floor(Date.now() / 1000);[m
+[31m-[m
+[31m-  if (Number(duel.turn_deadline_at || 0) <= now) {[m
+[31m-    return { error: "timeout" };[m
+[31m-  }[m
+[31m-[m
+[31m-  const column = uid === duel.challenger_id ? "action_a" : "action_b";[m
+[31m-  const saved = db.prepare(`[m
+[31m-    UPDATE combat_duels[m
+[31m-    SET ${column}=?,[m
+[31m-        last_action_at=?,[m
+[31m-        turn_owner_id=?,[m
+[31m-        turn_deadline_at=?[m
+[31m-    WHERE id=? AND status='active'[m
+[31m-      AND turn_owner_id=?[m
+[31m-      AND ${column} IS NULL[m
+[31m-  `).run([m
+[31m-    JSON.stringify(move),[m
+[31m-    now,[m
+[31m-    uid === duel.challenger_id ? duel.opponent_id : duel.challenger_id,[m
+[31m-    now + TURN_SECONDS,[m
+[31m-    id,[m
+[31m-    uid[m
+[31m-  );[m
+[31m-[m
+[31m-  if (!saved.changes) return { error: "already" };[m
+[31m-[m
+[31m-  const fresh = db.prepare([m
+[31m-    "SELECT * FROM combat_duels WHERE id=?"[m
+[31m-  ).get(id);[m
+[31m-[m
+[31m-  if (!fresh.action_a || !fresh.action_b) {[m
+[31m-    return {[m
+[31m-      waiting: true,[m
+[31m-      id,[m
+[31m-      nextPlayer: fresh.turn_owner_id,[m
+[31m-      deadline: fresh.turn_deadline_at[m
+[31m-    };[m
+[31m-  }[m
+[31m-[m
+[32m+[m[32mfunction resolveRound(fresh, now) {[m
+   const actionA = readAction(fresh.action_a);[m
+   const actionB = readAction(fresh.action_b);[m
+   const weaponA = getWeapon(fresh.challenger_id);[m
+[36m@@ -510,14 +456,15 @@[m [mconst submitMove = db.transaction((id, uid, move) => {[m
+     hpB,[m
+     done ? (winner ? "finished" : "draw") : "active",[m
+     fresh.challenger_id,[m
+[31m-    now + TURN_SECONDS,[m
+[32m+[m[32m    done ? null : now + TURN_SECONDS,[m
+     now,[m
+[31m-    id[m
+[32m+[m[32m    fresh.id[m
+   );[m
+ [m
+   return {[m
+     resolved: true,[m
+[31m-    id,[m
+[32m+[m[32m    id: fresh.id,[m
+[32m+[m[32m    chatId: fresh.chat_id,[m
+     turn: fresh.turn,[m
+     challenger: fresh.challenger_id,[m
+     opponent: fresh.opponent_id,[m
+[36m@@ -532,6 +479,66 @@[m [mconst submitMove = db.transaction((id, uid, move) => {[m
+     done,[m
+     winner[m
+   };[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mconst submitMove = db.transaction((id, uid, move, chatId) => {[m
+[32m+[m[32m  const duel = db.prepare(`[m
+[32m+[m[32m    SELECT *[m
+[32m+[m[32m    FROM combat_duels[m
+[32m+[m[32m    WHERE id=? AND status='active' AND chat_id=?[m
+[32m+[m[32m  `).get(id, chatId);[m
+[32m+[m
+[32m+[m[32m  if (!duel) return { error: "invalid" };[m
+[32m+[m
+[32m+[m[32m  if (![duel.challenger_id, duel.opponent_id].includes(uid)) {[m
+[32m+[m[32m    return { error: "invalid" };[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  if (String(duel.turn_owner_id) !== uid) {[m
+[32m+[m[32m    return { error: "not_turn", owner: duel.turn_owner_id };[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  const now = Math.floor(Date.now() / 1000);[m
+[32m+[m
+[32m+[m[32m  if (Number(duel.turn_deadline_at || 0) <= now) {[m
+[32m+[m[32m    return { error: "timeout" };[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  const column = uid === duel.challenger_id ? "action_a" : "action_b";[m
+[32m+[m[32m  const saved = db.prepare(`[m
+[32m+[m[32m    UPDATE combat_duels[m
+[32m+[m[32m    SET ${column}=?,[m
+[32m+[m[32m        last_action_at=?,[m
+[32m+[m[32m        turn_owner_id=?,[m
+[32m+[m[32m        turn_deadline_at=?[m
+[32m+[m[32m    WHERE id=? AND status='active'[m
+[32m+[m[32m      AND turn_owner_id=?[m
+[32m+[m[32m      AND ${column} IS NULL[m
+[32m+[m[32m  `).run([m
+[32m+[m[32m    JSON.stringify(move),[m
+[32m+[m[32m    now,[m
+[32m+[m[32m    uid === duel.challenger_id ? duel.opponent_id : duel.challenger_id,[m
+[32m+[m[32m    now + TURN_SECONDS,[m
+[32m+[m[32m    id,[m
+[32m+[m[32m    uid[m
+[32m+[m[32m  );[m
+[32m+[m
+[32m+[m[32m  if (!saved.changes) return { error: "already" };[m
+[32m+[m
+[32m+[m[32m  const fresh = db.prepare([m
+[32m+[m[32m    "SELECT * FROM combat_duels WHERE id=?"[m
+[32m+[m[32m  ).get(id);[m
+[32m+[m
+[32m+[m[32m  if (!fresh.action_a || !fresh.action_b) {[m
+[32m+[m[32m    return {[m
+[32m+[m[32m      waiting: true,[m
+[32m+[m[32m      id,[m
+[32m+[m[32m      nextPlayer: fresh.turn_owner_id,[m
+[32m+[m[32m      deadline: fresh.turn_deadline_at[m
+[32m+[m[32m    };[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  return resolveRound(fresh, now);[m
+ });[m
+ [m
+ const processOneTimeout = db.transaction((id, now) => {[m
+[36m@@ -569,6 +576,20 @@[m [mconst processOneTimeout = db.transaction((id, now) => {[m
+ [m
+     if (!updated.changes) return null;[m
+ [m
+[32m+[m[32m    const fresh = db.prepare([m
+[32m+[m[32m      "SELECT * FROM combat_duels WHERE id=?"[m
+[32m+[m[32m    ).get(id);[m
+[32m+[m
+[32m+[m[32m    // اگر حریف قبلاً حرکتش را ثبت کرده باشد، PASS باید همان لحظه دور را ببندد.[m
+[32m+[m[32m    if (fresh?.action_a && fresh?.action_b) {[m
+[32m+[m[32m      return {[m
+[32m+[m[32m        ...resolveRound(fresh, now),[m
+[32m+[m[32m        type: "resolved",[m
+[32m+[m[32m        chatId: duel.chat_id,[m
+[32m+[m[32m        missed: duel.turn_owner_id[m
+[32m+[m[32m      };[m
+[32m+[m[32m    }[m
+[32m+[m
+     return {[m
+       type: "passed",[m
+       chatId: duel.chat_id,[m
+[36m@@ -578,6 +599,13 @@[m [mconst processOneTimeout = db.transaction((id, now) => {[m
+     };[m
+   }[m
+ [m
+[32m+[m[32m  // کسر XP و لغو پرونده در یک تراکنش واحد انجام می‌شوند.[m
+[32m+[m[32m  const penaltyA = deductCombatTimeoutXP(duel.challenger_id, 20);[m
+[32m+[m[32m  const penaltyB = deductCombatTimeoutXP(duel.opponent_id, 20);[m
+[32m+[m[32m  if (!penaltyA || !penaltyB) {[m
+[32m+[m[32m    throw new Error(`Combat timeout XP penalty failed for duel ${id}`);[m
+[32m+[m[32m  }[m
+[32m+[m
+   const updated = db.prepare(`[m
+     UPDATE combat_duels[m
+     SET status='cancelled',[m
+[36m@@ -594,7 +622,9 @@[m [mconst processOneTimeout = db.transaction((id, now) => {[m
+     chatId: duel.chat_id,[m
+     duelId: duel.id,[m
+     playerA: duel.challenger_id,[m
+[31m-    playerB: duel.opponent_id[m
+[32m+[m[32m    playerB: duel.opponent_id,[m
+[32m+[m[32m    lostA: penaltyA.lostXP,[m
+[32m+[m[32m    lostB: penaltyB.lostXP[m
+   };[m
+ });[m
+ [m
+[36m@@ -625,17 +655,39 @@[m [masync function processDueDuels(api) {[m
+ نوبت به ${playerName(result.next)} منتقل شد.[m
+ ۳ دقیقه فرصت باقی است.`[m
+         );[m
+[32m+[m[32m      } else if (result.type === "resolved") {[m
+[32m+[m[32m        await api.sendMessage(result.chatId, formatResult(result));[m
+[32m+[m
+[32m+[m[32m        if (result.done && result.winner) {[m
+[32m+[m[32m          const loser = result.winner === result.challenger[m
+[32m+[m[32m            ? result.opponent[m
+[32m+[m[32m            : result.challenger;[m
+[32m+[m[32m          const reward = awardCombatVictoryXP([m
+[32m+[m[32m            result.winner,[m
+[32m+[m[32m            loser,[m
+[32m+[m[32m            `combat:${result.id}:winner`[m
+[32m+[m[32m          );[m
+[32m+[m[32m          await api.sendMessage([m
+[32m+[m[32m            result.chatId,[m
+[32m+[m[32m            `🏆 پیروز میدان: ${playerName(result.winner)}[m
+[32m+[m[32m${xpAwardText(reward) || "پاداش XP به دلیل محدودیت روزانه یا ثبت قبلی تعلق نگرفت."}`[m
+[32m+[m[32m          );[m
+[32m+[m[32m        } else if (result.done) {[m
+[32m+[m[32m          await api.sendMessage(result.chatId, "🤝 مبارزه با نتیجه مساوی پایان یافت.");[m
+[32m+[m[32m        } else {[m
+[32m+[m[32m          const next = db.prepare([m
+[32m+[m[32m            "SELECT * FROM combat_duels WHERE id=?"[m
+[32m+[m[32m          ).get(result.id);[m
+[32m+[m[32m          await api.sendMessage(result.chatId, duelText(next));[m
+[32m+[m[32m        }[m
+       } else {[m
+[31m-        const penaltyA = deductCombatTimeoutXP(result.playerA, 20);[m
+[31m-        const penaltyB = deductCombatTimeoutXP(result.playerB, 20);[m
+[31m-[m
+         await api.sendMessage([m
+           result.chatId,[m
+           `⛓️ مبارزه شماره ${result.duelId} لغو شد.[m
+ هر دو بازیکن مهلت خود را از دست دادند.[m
+ [m
+[31m-🥀 ${playerName(result.playerA)}: کسر ${penaltyA?.lostXP ?? 0} XP[m
+[31m-🥀 ${playerName(result.playerB)}: کسر ${penaltyB?.lostXP ?? 0} XP`[m
+[32m+[m[32m🥀 ${playerName(result.playerA)}: کسر ${result.lostA} XP[m
+[32m+[m[32m🥀 ${playerName(result.playerB)}: کسر ${result.lostB} XP`[m
+         );[m
+       }[m
+     } catch (error) {[m
+[36m@@ -870,7 +922,7 @@[m [m${output.join("\n\n")}[m
+ [m
+   bot.hears(/^#پذیرش\s+([0-9]+)$/u, async ctx => {[m
+     const id = Number(ctx.match[1]);[m
+[31m-    const duel = acceptDuel(id, String(ctx.from.id));[m
+[32m+[m[32m    const duel = acceptDuel(id, String(ctx.from.id), String(ctx.chat.id));[m
+ [m
+     if (!duel) {[m
+       return ctx.reply("❌ دعوت پیدا نشد، منقضی شده یا برای تو نیست.");[m
+[36m@@ -902,9 +954,13 @@[m [m${duelText(duel)}[m
+       );[m
+     }[m
+ [m
+[32m+[m[32m    if (parsed.error === "long") {[m
+[32m+[m[32m      return ctx.reply("❌ متن حرکت بیش از ۲۵۰ نویسه است.");[m
+[32m+[m[32m    }[m
+[32m+[m
+     await processDueDuels(bot.api);[m
+ [m
+[31m-    const result = submitMove(id, uid, parsed);[m
+[32m+[m[32m    const result = submitMove(id, uid, parsed, String(ctx.chat.id));[m
+ [m
+     if (result.error === "invalid") {[m
+       return ctx.reply("❌ مبارزه فعال یا مجاز پیدا نشد.");[m
