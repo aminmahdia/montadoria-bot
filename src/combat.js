@@ -139,6 +139,11 @@ ensureColumn("combat_duels", "turn_deadline_at", "INTEGER");
 ensureColumn("combat_duels", "timeout_stage", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("combat_duels", "energy_a", "INTEGER NOT NULL DEFAULT 100");
 ensureColumn("combat_duels", "energy_b", "INTEGER NOT NULL DEFAULT 100");
+ensureColumn("combat_duels", "panel_message_id", "INTEGER");
+ensureColumn("combat_duels", "last_round_text", "TEXT");
+ensureColumn("combat_duels", "end_request_by", "TEXT");
+ensureColumn("combat_duels", "end_request_at", "INTEGER");
+ensureColumn("combat_duels", "winner_id", "TEXT");
 
 db.exec(`
   UPDATE combat_duels
@@ -331,20 +336,191 @@ function strike(attackerId, defenderId, weapon, attack, defense) {
   };
 }
 
+
+// MONTADORIA_COMBAT_PANEL_V2
+
+function hpBar(value) {
+  const amount = Math.max(0, Math.min(100, Number(value ?? 100)));
+  const filled = Math.round(amount / 10);
+  return "🟩".repeat(filled) + "⬛".repeat(10 - filled);
+}
+
 function duelText(duel) {
-  const owner = duel.turn_owner_id;
+  const hpA = Number(duel.hp_a ?? 100);
+  const hpB = Number(duel.hp_b ?? 100);
+  const energyA = Number(duel.energy_a ?? 100);
+  const energyB = Number(duel.energy_b ?? 100);
+  const active = duel.status === "active";
 
-  return `⚔️ پرونده مبارزه شماره ${duel.id}
+  let state = "⛓️ پرونده لغو شده";
+  if (active) state = "⚔️ مبارزه در جریان است";
+  if (duel.status === "finished") state = "🏁 مبارزه پایان یافته";
+  if (duel.status === "draw") state = "🤝 مبارزه با توافق یا تساوی پایان یافته";
 
-🥀 ${playerName(duel.challenger_id)}: ${duel.hp_a} HP
-${energyBar(duel.energy_a)} انرژی: ${duel.energy_a ?? 100}/100
+  let text = `⚔️ پرونده مبارزه شماره ${duel.id}
 
-🛡 ${playerName(duel.opponent_id)}: ${duel.hp_b} HP
-${energyBar(duel.energy_b)} انرژی: ${duel.energy_b ?? 100}/100
+${state}
 
-دور: ${duel.turn} از ${MAX_ROUNDS}
-نوبت فعلی: ${playerName(owner)}
-⏳ مهلت حرکت: ۳ دقیقه`;
+━━━━━━━━━━━━━━
+
+🥀 ${playerName(duel.challenger_id)}
+❤️ سلامتی: ${hpA}/100
+${hpBar(hpA)}
+⚡ انرژی: ${energyA}/100
+${energyBar(energyA)}
+
+━━━━━━━━━━━━━━
+
+🛡 ${playerName(duel.opponent_id)}
+❤️ سلامتی: ${hpB}/100
+${hpBar(hpB)}
+⚡ انرژی: ${energyB}/100
+${energyBar(energyB)}
+
+━━━━━━━━━━━━━━
+
+🎯 دور: ${Math.min(Number(duel.turn || 1), MAX_ROUNDS)} از ${MAX_ROUNDS}`;
+
+  if (active) {
+    text += `
+
+نوبت فعلی: ${playerName(duel.turn_owner_id)}
+⏳ مهلت هر نوبت: ۳ دقیقه
+برای ثبت حرکت:
+#حرکت ${duel.id} متن حرکت`;
+
+    if (duel.end_request_by) {
+      text += `
+
+📨 درخواست پایان توافقی از طرف:
+${playerName(duel.end_request_by)}
+منتظر پاسخ بازیکن مقابل است.`;
+    }
+  } else if (duel.status === "finished" && duel.winner_id) {
+    text += `
+
+🏆 برنده: ${playerName(duel.winner_id)}`;
+  }
+
+  if (duel.last_round_text) {
+    text += `
+
+━━━━━━━━━━━━━━
+
+📜 آخرین رویداد:
+${String(duel.last_round_text).slice(-1300)}`;
+  }
+
+  return text;
+}
+
+function combatKeyboard(duel) {
+  if (!duel || duel.status !== "active") {
+    return { inline_keyboard: [] };
+  }
+
+  const id = Number(duel.id);
+
+  if (duel.end_request_by) {
+    return {
+      inline_keyboard: [
+        [
+          {
+            text: "🏳️ تسلیم",
+            callback_data: `cmp_surr:${id}`
+          }
+        ],
+        [
+          {
+            text: "✅ قبول پایان",
+            callback_data: `cmp_end_accept:${id}`
+          },
+          {
+            text: "❌ رد درخواست",
+            callback_data: `cmp_end_reject:${id}`
+          },
+          {
+            text: "↩️ لغو درخواست",
+            callback_data: `cmp_end_cancel:${id}`
+          }
+        ]
+      ]
+    };
+  }
+
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: "🏳️ تسلیم",
+          callback_data: `cmp_surr:${id}`
+        }
+      ],
+      [
+        {
+          text: "🤝 درخواست پایان توافقی",
+          callback_data: `cmp_end_request:${id}`
+        }
+      ]
+    ]
+  };
+}
+
+function saveDuelNotice(id, message) {
+  db.prepare(`
+    UPDATE combat_duels
+    SET last_round_text=?
+    WHERE id=?
+  `).run(String(message || "").slice(-1300), id);
+}
+
+async function updateCombatPanel(api, id) {
+  const duel = db.prepare(`
+    SELECT *
+    FROM combat_duels
+    WHERE id=?
+  `).get(id);
+
+  if (!duel) return;
+
+  const text = duelText(duel);
+  const options = {
+    reply_markup: combatKeyboard(duel)
+  };
+
+  if (duel.panel_message_id) {
+    try {
+      await api.editMessageText(
+        duel.chat_id,
+        Number(duel.panel_message_id),
+        text,
+        options
+      );
+      return;
+    } catch (error) {
+      const message = String(error?.description || error?.message || error);
+
+      if (/message is not modified/i.test(message)) return;
+
+      if (!/message to edit not found|message_id_invalid|message identifier is not specified/i.test(message)) {
+        throw error;
+      }
+
+      db.prepare(`
+        UPDATE combat_duels
+        SET panel_message_id=NULL
+        WHERE id=?
+      `).run(id);
+    }
+  }
+
+  const sent = await api.sendMessage(duel.chat_id, text, options);
+
+  db.prepare(`
+    UPDATE combat_duels
+    SET panel_message_id=?
+    WHERE id=?
+  `).run(sent.message_id, id);
 }
 
 const createDuel = db.transaction((chatId, a, b) => {
@@ -411,6 +587,209 @@ const acceptDuel = db.transaction((id, uid, chatId) => {
   ).get(id);
 });
 
+
+
+const finishBySurrender = db.transaction((id, uid, chatId) => {
+  const duel = db.prepare(`
+    SELECT *
+    FROM combat_duels
+    WHERE id=? AND chat_id=? AND status='active'
+  `).get(id, chatId);
+
+  if (!duel) return { error: "invalid" };
+
+  if (![String(duel.challenger_id), String(duel.opponent_id)].includes(uid)) {
+    return { error: "not_player" };
+  }
+
+  const winner = uid === String(duel.challenger_id)
+    ? String(duel.opponent_id)
+    : String(duel.challenger_id);
+
+  const notice = `🏳️ ${playerName(uid)} تسلیم شد.
+🏆 ${playerName(winner)} برنده مبارزه شد.`;
+
+  const updated = db.prepare(`
+    UPDATE combat_duels
+    SET status='finished',
+        winner_id=?,
+        turn_deadline_at=NULL,
+        end_request_by=NULL,
+        end_request_at=NULL,
+        last_action_at=?,
+        last_round_text=?
+    WHERE id=? AND status='active'
+  `).run(
+    winner,
+    Math.floor(Date.now() / 1000),
+    notice,
+    id
+  );
+
+  if (!updated.changes) return { error: "finished" };
+
+  return {
+    ok: true,
+    winner,
+    loser: uid
+  };
+});
+
+const requestDuelEnd = db.transaction((id, uid, chatId) => {
+  const duel = db.prepare(`
+    SELECT *
+    FROM combat_duels
+    WHERE id=? AND chat_id=? AND status='active'
+  `).get(id, chatId);
+
+  if (!duel) return { error: "invalid" };
+
+  if (![String(duel.challenger_id), String(duel.opponent_id)].includes(uid)) {
+    return { error: "not_player" };
+  }
+
+  if (duel.end_request_by) {
+    return {
+      error: String(duel.end_request_by) === uid ? "already_own" : "pending"
+    };
+  }
+
+  const notice = `📨 ${playerName(uid)} درخواست پایان توافقی مبارزه را ثبت کرد.`;
+
+  const updated = db.prepare(`
+    UPDATE combat_duels
+    SET end_request_by=?,
+        end_request_at=?,
+        last_round_text=?
+    WHERE id=? AND status='active'
+      AND end_request_by IS NULL
+  `).run(
+    uid,
+    Math.floor(Date.now() / 1000),
+    notice,
+    id
+  );
+
+  if (!updated.changes) return { error: "pending" };
+
+  return { ok: true };
+});
+
+const respondDuelEnd = db.transaction((id, uid, chatId, action) => {
+  const duel = db.prepare(`
+    SELECT *
+    FROM combat_duels
+    WHERE id=? AND chat_id=? AND status='active'
+  `).get(id, chatId);
+
+  if (!duel || !duel.end_request_by) return { error: "no_request" };
+
+  const requester = String(duel.end_request_by);
+  const isPlayer = [
+    String(duel.challenger_id),
+    String(duel.opponent_id)
+  ].includes(uid);
+
+  if (!isPlayer) return { error: "not_player" };
+
+  if (action === "cancel" && uid !== requester) {
+    return { error: "not_requester" };
+  }
+
+  if ((action === "accept" || action === "reject") && uid === requester) {
+    return { error: "requester_cannot_answer" };
+  }
+
+  if (!["accept", "reject", "cancel"].includes(action)) {
+    return { error: "invalid_action" };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+
+  if (action === "accept") {
+    const notice = `🤝 پایان توافقی مبارزه پذیرفته شد.
+هر دو بازیکن با پایان مبارزه موافقت کردند.`;
+
+    const updated = db.prepare(`
+      UPDATE combat_duels
+      SET status='draw',
+          winner_id=NULL,
+          turn_deadline_at=NULL,
+          end_request_by=NULL,
+          end_request_at=NULL,
+          last_action_at=?,
+          last_round_text=?
+      WHERE id=? AND status='active'
+        AND end_request_by=?
+    `).run(now, notice, id, requester);
+
+    if (!updated.changes) return { error: "no_request" };
+    return { ok: true, action: "accepted" };
+  }
+
+  const notice = action === "reject"
+    ? `❌ ${playerName(uid)} درخواست پایان توافقی را رد کرد. مبارزه ادامه دارد.`
+    : `↩️ ${playerName(uid)} درخواست پایان توافقی را لغو کرد. مبارزه ادامه دارد.`;
+
+  const updated = db.prepare(`
+    UPDATE combat_duels
+    SET end_request_by=NULL,
+        end_request_at=NULL,
+        last_action_at=?,
+        last_round_text=?
+    WHERE id=? AND status='active'
+      AND end_request_by=?
+  `).run(now, notice, id, requester);
+
+  if (!updated.changes) return { error: "no_request" };
+
+  return { ok: true, action };
+});
+
+function isCombatPanelMessage(ctx, id) {
+  const message = ctx.callbackQuery?.message;
+  if (!message) return false;
+
+  const duel = db.prepare(`
+    SELECT chat_id,panel_message_id
+    FROM combat_duels
+    WHERE id=?
+  `).get(id);
+
+  if (!duel || !duel.panel_message_id) return false;
+
+  return String(message.chat?.id) === String(duel.chat_id) &&
+    Number(message.message_id) === Number(duel.panel_message_id);
+}
+
+async function recordCombatWinner(api, id, winner, loser) {
+  const reward = awardCombatVictoryXP(
+    winner,
+    loser,
+    `combat:${id}:winner`
+  );
+
+  const rewardText = xpAwardText(reward) ||
+    "پاداش XP به دلیل محدودیت روزانه یا ثبت قبلی تعلق نگرفت.";
+
+  const current = db.prepare(`
+    SELECT last_round_text
+    FROM combat_duels
+    WHERE id=?
+  `).get(id);
+
+  const previous = current?.last_round_text || "";
+
+  saveDuelNotice(
+    id,
+    `${previous}
+
+🏆 پیروز میدان: ${playerName(winner)}
+${rewardText}`
+  );
+
+  await updateCombatPanel(api, id);
+}
 
 function energyCost(action) {
   if (action.kind === "pass") return 0;
@@ -533,7 +912,7 @@ function resolveRound(fresh, now) {
     fresh.id
   );
 
-  return {
+  const result = {
     resolved: true,
     id: fresh.id,
     chatId: fresh.chat_id,
@@ -553,6 +932,19 @@ function resolveRound(fresh, now) {
     done,
     winner
   };
+
+  db.prepare(`
+    UPDATE combat_duels
+    SET last_round_text=?,
+        winner_id=?
+    WHERE id=?
+  `).run(
+    formatResult(result),
+    winner ? String(winner) : null,
+    fresh.id
+  );
+
+  return result;
 }
 
 const submitMove = db.transaction((id, uid, move, chatId) => {
@@ -654,15 +1046,30 @@ const processOneTimeout = db.transaction((id, now) => {
       "SELECT * FROM combat_duels WHERE id=?"
     ).get(id);
 
-    // اگر حریف قبلاً حرکتش را ثبت کرده باشد، PASS باید همان لحظه دور را ببندد.
+    // اگر حریف قبلاً حرکتش را ثبت کرده باشد، PASS همان لحظه دور را می‌بندد.
     if (fresh?.action_a && fresh?.action_b) {
+      const resolved = resolveRound(fresh, now);
+
+      saveDuelNotice(
+        id,
+        `⏳ مهلت ${playerName(duel.turn_owner_id)} تمام شد و حرکت او ثبت نشد.
+
+${formatResult(resolved)}`
+      );
+
       return {
-        ...resolveRound(fresh, now),
+        ...resolved,
         type: "resolved",
         chatId: duel.chat_id,
         missed: duel.turn_owner_id
       };
     }
+
+    const notice = `⏳ مهلت ${playerName(duel.turn_owner_id)} به پایان رسید.
+نوبت به ${playerName(nextPlayer)} منتقل شد.
+۳ دقیقه فرصت باقی است.`;
+
+    saveDuelNotice(id, notice);
 
     return {
       type: "passed",
@@ -683,13 +1090,25 @@ const processOneTimeout = db.transaction((id, now) => {
   const updated = db.prepare(`
     UPDATE combat_duels
     SET status='cancelled',
+        winner_id=NULL,
         turn_deadline_at=NULL,
+        end_request_by=NULL,
+        end_request_at=NULL,
         last_action_at=?
     WHERE id=? AND status='active'
       AND turn_deadline_at <= ?
   `).run(now, id, now);
 
   if (!updated.changes) return null;
+
+  saveDuelNotice(
+    id,
+    `⛓️ مبارزه شماره ${duel.id} لغو شد.
+هر دو بازیکن مهلت خود را از دست دادند.
+
+🥀 ${playerName(duel.challenger_id)}: کسر ${penaltyA.lostXP} XP
+🥀 ${playerName(duel.opponent_id)}: کسر ${penaltyB.lostXP} XP`
+  );
 
   return {
     type: "cancelled",
@@ -721,55 +1140,39 @@ async function processDueDuels(api) {
     const result = processOneTimeout(item.id, now);
     if (!result) continue;
 
+    const duelId = Number(result.id || result.duelId);
+
     try {
       if (result.type === "passed") {
-        await api.sendMessage(
-          result.chatId,
+        saveDuelNotice(
+          duelId,
           `⏳ مهلت ${playerName(result.missed)} به پایان رسید.
 نوبت به ${playerName(result.next)} منتقل شد.
 ۳ دقیقه فرصت باقی است.`
         );
-      } else if (result.type === "resolved") {
-        await api.sendMessage(result.chatId, formatResult(result));
+      } else if (result.type === "resolved" && result.done && result.winner) {
+        const loser = String(result.winner) === String(result.challenger)
+          ? result.opponent
+          : result.challenger;
 
-        if (result.done && result.winner) {
-          const loser = result.winner === result.challenger
-            ? result.opponent
-            : result.challenger;
-          const reward = awardCombatVictoryXP(
-            result.winner,
-            loser,
-            `combat:${result.id}:winner`
-          );
-          await api.sendMessage(
-            result.chatId,
-            `🏆 پیروز میدان: ${playerName(result.winner)}
-${xpAwardText(reward) || "پاداش XP به دلیل محدودیت روزانه یا ثبت قبلی تعلق نگرفت."}`
-          );
-        } else if (result.done) {
-          await api.sendMessage(result.chatId, "🤝 مبارزه با نتیجه مساوی پایان یافت.");
-        } else {
-          const next = db.prepare(
-            "SELECT * FROM combat_duels WHERE id=?"
-          ).get(result.id);
-          await api.sendMessage(result.chatId, duelText(next));
-        }
-      } else {
-        await api.sendMessage(
-          result.chatId,
-          `⛓️ مبارزه شماره ${result.duelId} لغو شد.
-هر دو بازیکن مهلت خود را از دست دادند.
+        await recordCombatWinner(api, duelId, result.winner, loser);
+        continue;
+      } else if (result.type === "resolved" && result.done) {
+        saveDuelNotice(
+          duelId,
+          `${formatResult(result)}
 
-🥀 ${playerName(result.playerA)}: کسر ${result.lostA} XP
-🥀 ${playerName(result.playerB)}: کسر ${result.lostB} XP`
+🤝 مبارزه با نتیجه مساوی پایان یافت.`
         );
       }
+
+      // همه رویدادها در پیام پنل همان مبارزه نمایش داده می‌شوند.
+      await updateCombatPanel(api, duelId);
     } catch (error) {
-      console.error("Combat timeout notification error:", error);
+      console.error("Combat panel timeout update error:", error);
     }
   }
 }
-
 function formatResult(result) {
   return `⚔️ نتیجه دور ${result.turn}
 
@@ -784,13 +1187,15 @@ function formatResult(result) {
 نتیجه: ${result.hitB}
 
 ━━━━━━━━━━━━━━
-❤️ ${playerName(result.challenger)}: ${result.hpA} HP
-${energyBar(result.energyA)} انرژی: ${result.energyA}/100
 
-❤️ ${playerName(result.opponent)}: ${result.hpB} HP
-${energyBar(result.energyB)} انرژی: ${result.energyB}/100`;
+❤️ ${playerName(result.challenger)}: ${result.hpA}/100
+${hpBar(result.hpA)}
+⚡ ${energyBar(result.energyA)} ${result.energyA}/100
+
+❤️ ${playerName(result.opponent)}: ${result.hpB}/100
+${hpBar(result.hpB)}
+⚡ ${energyBar(result.energyB)} ${result.energyB}/100`;
 }
-
 
 const WEAPON_KIND_ORDER = [
   "شمشیر", "خنجر", "تبر", "گرز", "نیزه",
@@ -1077,15 +1482,7 @@ export function registerCombat(bot) {
       return ctx.reply("❌ دعوت پیدا نشد، منقضی شده یا برای تو نیست.");
     }
 
-    await ctx.reply(
-      `⚔️ مبارزه آغاز شد.
-
-${duelText(duel)}
-
-حرکت اول با ${playerName(duel.challenger_id)} است.
-برای ثبت حرکت:
-#حرکت ${id} متن حرکت`
-    );
+    await updateCombatPanel(bot.api, id);
   });
 
   bot.hears(/^#حرکت\s+([0-9]+)\s+([\s\S]{2,250})$/u, async ctx => {
@@ -1130,42 +1527,157 @@ ${duelText(duel)}
     }
 
     if (result.waiting) {
-      return ctx.reply(
-        `✅ حرکت ثبت شد.
+      saveDuelNotice(
+        id,
+        `✅ حرکت ${playerName(uid)} ثبت شد.
 نوبت ${playerName(result.nextPlayer)} است.
 ۳ دقیقه فرصت دارد.`
       );
+
+      await updateCombatPanel(bot.api, id);
+      return;
     }
 
-    await ctx.reply(formatResult(result));
-
-    if (result.done) {
-      if (!result.winner) {
-        return ctx.reply("🤝 مبارزه با نتیجه مساوی پایان یافت.");
-      }
-
-      const loser = result.winner === result.challenger
+    if (result.done && result.winner) {
+      const loser = String(result.winner) === String(result.challenger)
         ? result.opponent
         : result.challenger;
 
-      const reward = awardCombatVictoryXP(
+      await recordCombatWinner(
+        bot.api,
+        id,
         result.winner,
-        loser,
-        `combat:${id}:winner`
+        loser
       );
+      return;
+    }
 
-      return ctx.reply(
-        `🏆 پیروز میدان: ${playerName(result.winner)}
-${xpAwardText(reward) || "پاداش XP به دلیل محدودیت روزانه یا ثبت قبلی تعلق نگرفت."}`
+    if (result.done && !result.winner) {
+      saveDuelNotice(
+        id,
+        `${formatResult(result)}
+
+🤝 مبارزه با نتیجه مساوی پایان یافت.`
       );
     }
 
-    const next = db.prepare(
-      "SELECT * FROM combat_duels WHERE id=?"
-    ).get(id);
-
-    await ctx.reply(duelText(next));
+    await updateCombatPanel(bot.api, id);
   });
+
+
+  // دکمه تسلیم
+  bot.callbackQuery(/^cmp_surr:([0-9]+)$/u, async ctx => {
+    const id = Number(ctx.match[1]);
+    const uid = String(ctx.from.id);
+    const chatId = String(ctx.callbackQuery.message?.chat?.id ?? "");
+
+    if (!isCombatPanelMessage(ctx, id)) {
+      return ctx.answerCallbackQuery({
+        text: "این پنل دیگر معتبر نیست.",
+        show_alert: true
+      });
+    }
+
+    const result = finishBySurrender(id, uid, chatId);
+
+    if (result.error) {
+      return ctx.answerCallbackQuery({
+        text: result.error === "not_player"
+          ? "تو بازیکن این مبارزه نیستی."
+          : "این مبارزه دیگر فعال نیست.",
+        show_alert: true
+      });
+    }
+
+    await recordCombatWinner(
+      bot.api,
+      id,
+      result.winner,
+      result.loser
+    );
+
+    await ctx.answerCallbackQuery({ text: "تسلیم ثبت شد." });
+  });
+
+  // درخواست پایان توافقی
+  bot.callbackQuery(/^cmp_end_request:([0-9]+)$/u, async ctx => {
+    const id = Number(ctx.match[1]);
+    const uid = String(ctx.from.id);
+    const chatId = String(ctx.callbackQuery.message?.chat?.id ?? "");
+
+    if (!isCombatPanelMessage(ctx, id)) {
+      return ctx.answerCallbackQuery({
+        text: "این پنل دیگر معتبر نیست.",
+        show_alert: true
+      });
+    }
+
+    const result = requestDuelEnd(id, uid, chatId);
+
+    if (result.error) {
+      const messages = {
+        invalid: "مبارزه فعال پیدا نشد.",
+        not_player: "تو بازیکن این مبارزه نیستی.",
+        already_own: "درخواست پایان را قبلاً ثبت کرده‌ای.",
+        pending: "درخواست دیگری در انتظار پاسخ است."
+      };
+
+      return ctx.answerCallbackQuery({
+        text: messages[result.error] || "درخواست انجام نشد.",
+        show_alert: true
+      });
+    }
+
+    await updateCombatPanel(bot.api, id);
+    await ctx.answerCallbackQuery({
+      text: "درخواست پایان برای بازیکن مقابل ثبت شد."
+    });
+  });
+
+  // قبول پایان توافقی، رد درخواست یا لغو درخواست خود
+  for (const action of ["accept", "reject", "cancel"]) {
+    bot.callbackQuery(
+      new RegExp(`^cmp_end_${action}:([0-9]+)$`, "u"),
+      async ctx => {
+        const id = Number(ctx.match[1]);
+        const uid = String(ctx.from.id);
+        const chatId = String(ctx.callbackQuery.message?.chat?.id ?? "");
+
+        if (!isCombatPanelMessage(ctx, id)) {
+          return ctx.answerCallbackQuery({
+            text: "این پنل دیگر معتبر نیست.",
+            show_alert: true
+          });
+        }
+
+        const result = respondDuelEnd(id, uid, chatId, action);
+
+        if (result.error) {
+          const messages = {
+            no_request: "درخواست پایان فعالی وجود ندارد.",
+            not_player: "تو بازیکن این مبارزه نیستی.",
+            not_requester: "فقط ثبت‌کننده درخواست می‌تواند آن را لغو کند.",
+            requester_cannot_answer: "ثبت‌کننده درخواست نمی‌تواند درخواست خودش را قبول یا رد کند."
+          };
+
+          return ctx.answerCallbackQuery({
+            text: messages[result.error] || "این عملیات مجاز نیست.",
+            show_alert: true
+          });
+        }
+
+        await updateCombatPanel(bot.api, id);
+
+        const answer = action === "accept"
+          ? "پایان توافقی ثبت شد."
+          : action === "reject"
+            ? "درخواست رد شد؛ مبارزه ادامه دارد."
+            : "درخواست خودت لغو شد.";
+
+        await ctx.answerCallbackQuery({ text: answer });
+      }
+    );
+  }
 
   const timer = setInterval(() => {
     processDueDuels(bot.api).catch(error => {
