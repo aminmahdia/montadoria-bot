@@ -9,7 +9,6 @@ import {
 const TURN_SECONDS = 180;
 const INVITE_SECONDS = 15 * 60;
 const MAX_ACTIVE_DUELS = 100;
-const MAX_ROUNDS = 10;
 const MAX_ACTION_LENGTH = 250;
 
 const WEAPONS = [
@@ -346,69 +345,58 @@ function hpBar(value) {
 }
 
 function duelText(duel) {
-  const hpA = Number(duel.hp_a ?? 100);
-  const hpB = Number(duel.hp_b ?? 100);
-  const energyA = Number(duel.energy_a ?? 100);
-  const energyB = Number(duel.energy_b ?? 100);
-  const active = duel.status === "active";
+  const hpA = Math.max(0, Math.min(100, Number(duel.hp_a ?? 100)));
+  const hpB = Math.max(0, Math.min(100, Number(duel.hp_b ?? 100)));
+  const energyA = Math.max(0, Math.min(100, Number(duel.energy_a ?? 100)));
+  const energyB = Math.max(0, Math.min(100, Number(duel.energy_b ?? 100)));
 
-  let state = "⛓️ پرونده لغو شده";
-  if (active) state = "⚔️ مبارزه در جریان است";
-  if (duel.status === "finished") state = "🏁 مبارزه پایان یافته";
-  if (duel.status === "draw") state = "🤝 مبارزه با توافق یا تساوی پایان یافته";
+  const bar = (value, color) => {
+    const filled = Math.round(value / 10);
+    return color.repeat(filled) + "⬛".repeat(10 - filled);
+  };
 
-  let text = `⚔️ پرونده مبارزه شماره ${duel.id}
+  let status = "⚔️ مبارزه در جریان";
+  if (duel.status === "finished") status = "🏆 مبارزه پایان یافت";
+  if (duel.status === "draw") status = "🤝 پایان توافقی";
+  if (duel.status === "cancelled") status = "⛓️ مبارزه لغو شد";
+  if (duel.status === "pending") status = "⌛ منتظر پذیرش مبارزه";
 
-${state}
+  const playerA = playerName(duel.challenger_id);
+  const playerB = playerName(duel.opponent_id);
 
-━━━━━━━━━━━━━━
+  let text = `⚔️ DUEL #${duel.id}
+${status}
 
-🥀 ${playerName(duel.challenger_id)}
-❤️ سلامتی: ${hpA}/100
-${hpBar(hpA)}
-⚡ انرژی: ${energyA}/100
-${energyBar(energyA)}
-
-━━━━━━━━━━━━━━
-
-🛡 ${playerName(duel.opponent_id)}
-❤️ سلامتی: ${hpB}/100
-${hpBar(hpB)}
-⚡ انرژی: ${energyB}/100
-${energyBar(energyB)}
+${playerA}
+❤️ ${hpA}/100
+${bar(hpA, "🟩")}
+⚡ ${energyA}/100
+${bar(energyA, "🟦")}
 
 ━━━━━━━━━━━━━━
 
-🎯 دور: ${Math.min(Number(duel.turn || 1), MAX_ROUNDS)} از ${MAX_ROUNDS}`;
+${playerB}
+❤️ ${hpB}/100
+${bar(hpB, "🟩")}
+⚡ ${energyB}/100
+${bar(energyB, "🟦")}`;
 
-  if (active) {
+  if (duel.status === "active") {
     text += `
 
-نوبت فعلی: ${playerName(duel.turn_owner_id)}
-⏳ مهلت هر نوبت: ۳ دقیقه
-برای ثبت حرکت:
-#حرکت ${duel.id} متن حرکت`;
-
-    if (duel.end_request_by) {
-      text += `
-
-📨 درخواست پایان توافقی از طرف:
-${playerName(duel.end_request_by)}
-منتظر پاسخ بازیکن مقابل است.`;
-    }
-  } else if (duel.status === "finished" && duel.winner_id) {
-    text += `
-
-🏆 برنده: ${playerName(duel.winner_id)}`;
+⚔️ نوبت: ${playerName(duel.turn_owner_id)}`;
   }
 
-  if (duel.last_round_text) {
+  if (duel.status === "finished" && duel.winner_id) {
     text += `
 
-━━━━━━━━━━━━━━
+🏆 ${playerName(duel.winner_id)}`;
+  }
 
-📜 آخرین رویداد:
-${String(duel.last_round_text).slice(-1300)}`;
+  if (duel.status === "active" && duel.end_request_by) {
+    text += `
+
+🤝 درخواست پایان توافقی در انتظار پاسخ`;
   }
 
   return text;
@@ -880,7 +868,7 @@ function resolveRound(fresh, now) {
   const hpA = Math.max(0, fresh.hp_a - hitB.damage);
   const hpB = Math.max(0, fresh.hp_b - hitA.damage);
 
-  const done = hpA === 0 || hpB === 0 || fresh.turn >= MAX_ROUNDS;
+  const done = hpA === 0 || hpB === 0;
   const winner = hpA === hpB
     ? null
     : hpA > hpB ? fresh.challenger_id : fresh.opponent_id;
