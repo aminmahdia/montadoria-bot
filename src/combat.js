@@ -143,6 +143,7 @@ ensureColumn("combat_duels", "last_round_text", "TEXT");
 ensureColumn("combat_duels", "end_request_by", "TEXT");
 ensureColumn("combat_duels", "end_request_at", "INTEGER");
 ensureColumn("combat_duels", "winner_id", "TEXT");
+ensureColumn("combat_duels", "panel_notice", "TEXT");
 
 db.exec(`
   UPDATE combat_duels
@@ -399,6 +400,14 @@ ${bar(energyB, "🟦")}`;
 🤝 درخواست پایان توافقی در انتظار پاسخ`;
   }
 
+  if (duel.panel_notice) {
+    text += `
+
+━━━━━━━━━━━━━━
+
+${duel.panel_notice}`;
+  }
+
   return text;
 }
 
@@ -457,7 +466,7 @@ function combatKeyboard(duel) {
 function saveDuelNotice(id, message) {
   db.prepare(`
     UPDATE combat_duels
-    SET last_round_text=?
+    SET panel_notice=?
     WHERE id=?
   `).run(String(message || "").slice(-1300), id);
 }
