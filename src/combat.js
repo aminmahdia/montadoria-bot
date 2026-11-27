@@ -1140,6 +1140,23 @@ async function processDueDuels(api) {
     const duelId = Number(result.id || result.duelId);
 
     try {
+      if (result.type === "cancelled") {
+        try {
+          await api.sendMessage(
+            result.chatId,
+            `⛓️ مبارزه شماره ${duelId} لغو شد.
+مهلت هر دو بازیکن برای انجام حرکت به پایان رسید.
+
+🥀 ${playerName(result.playerA)}: ${result.lostA} امتیاز تجربه کسر شد.
+🥀 ${playerName(result.playerB)}: ${result.lostB} امتیاز تجربه کسر شد.
+
+این کسر امتیاز به دلیل لغو مبارزه اعمال شد.`
+          );
+        } catch (announcementError) {
+          console.error("Combat cancellation announcement error:", announcementError);
+        }
+      }
+
       if (result.type === "passed") {
         saveDuelNotice(
           duelId,
